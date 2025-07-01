@@ -19,28 +19,25 @@ app.add_middleware(
 BOT_TOKEN = "7732340254:AAGA0leeQI7riOxaVfiT3zzj_zAsMotV8LA"  # твой токен
 
 
+
+
 def validate_init_data(init_data: str, bot_token: str) -> bool:
     try:
-        # Преобразуем initData в словарь
         data = dict(parse_qsl(init_data, keep_blank_values=True))
 
-        # Отделяем hash от остальных параметров
         received_hash = data.pop("hash", None)
         if not received_hash:
             return False
 
-        # Сортируем ключи по алфавиту и собираем строку
         data_check_arr = [f"{k}={v}" for k, v in sorted(data.items())]
         data_check_string = "\n".join(data_check_arr)
 
-        # Генерация HMAC
         secret_key = hashlib.sha256(bot_token.encode()).digest()
         hmac_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
 
-        # Сравниваем результат
         return hmac_hash == received_hash
     except Exception as e:
-        print("Ошибка валидации:", e)
+        print("Ошибка при валидации:", e)
         return False
 
 
