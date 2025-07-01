@@ -28,23 +28,28 @@ def validate_init_data(init_data: str, bot_token: str) -> bool:
         data = dict(parse_qsl(init_data, keep_blank_values=True))
         print("🔍 Parsed data:", data)
 
+        # Убираем hash и signature — они НЕ участвуют в HMAC
         received_hash = data.pop("hash", None)
+        data.pop("signature", None)
+
         if not received_hash:
             print("❌ hash not found")
             return False
 
+        # Готовим data_check_string
         data_check_arr = [f"{k}={v}" for k, v in sorted(data.items())]
         data_check_string = "\n".join(data_check_arr)
+
         print("📦 data_check_string:\n", data_check_string)
 
         secret_key = hashlib.sha256(bot_token.encode()).digest()
         hmac_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+
         print("📡 hmac_hash:", hmac_hash)
         print("📩 received_hash:", received_hash)
+        print("✅ VALID:", hmac_hash == received_hash)
 
-        is_valid = hmac_hash == received_hash
-        print("✅ VALID:", is_valid)
-        return is_valid
+        return hmac_hash == received_hash
     except Exception as e:
         print("❗ Exception:", e)
         return False
