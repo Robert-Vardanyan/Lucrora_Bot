@@ -4,6 +4,7 @@ from starlette.responses import JSONResponse
 import hmac
 import hashlib
 from urllib.parse import parse_qsl
+from operator import itemgetter
 
 app = FastAPI()
 
@@ -20,37 +21,38 @@ BOT_TOKEN = "7732340254:AAGA0leeQI7riOxaVfiT3zzj_zAsMotV8LA"  # твой ток�
 
 
 
-def validate_init_data(init_data: str, bot_token: str) -> bool:
+
+def check_webapp_signature(init_data: str, token: str) -> bool:
+    """
+    Check incoming WebApp init data signature
+
+    Source: https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
+
+    :param token:
+    :param init_data:
+    :return:
+    """
     try:
-        print("➡️ init_data raw:", init_data)
-
-        data = dict(parse_qsl(init_data, keep_blank_values=True))
-        print("🔍 Parsed data:", data)
-
-        received_hash = data.pop("hash", None)
-        data.pop("signature", None)
-
-        if not received_hash:
-            print("❌ hash not found")
-            return False
-
-        # ТОЛЬКО это — правильный порядок
-        data_check_arr = sorted(f"{k}={v}" for k, v in data.items())
-        data_check_string = "\n".join(data_check_arr)
-
-        print("📦 data_check_string:\n", data_check_string)
-
-        secret_key = hashlib.sha256(bot_token.encode()).digest()
-        hmac_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
-
-        print("📡 hmac_hash:", hmac_hash)
-        print("📩 received_hash:", received_hash)
-        print("✅ VALID:", hmac_hash == received_hash)
-
-        return hmac_hash == received_hash
-    except Exception as e:
-        print("❗ Exception:", e)
+        parsed_data = dict(parse_qsl(init_data))
+    except ValueError:
+        # Init data is not a valid query string
         return False
+    if "hash" not in parsed_data:
+        # Hash is not present in init data
+        return False
+
+    hash_ = parsed_data.pop('hash')
+    data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(parsed_data.items(), key=itemgetter(0))
+    )
+    secret_key = hmac.new(
+        key=b"WebAppData", msg=token.encode(), digestmod=hashlib.sha256
+    )
+    calculated_hash = hmac.new(
+        key=secret_key.digest(), msg=data_check_string.encode(), digestmod=hashlib.sha256
+    ).hexdigest()
+    return calculated_hash == hash_
+
 
 
 
@@ -62,7 +64,7 @@ async def api_init(request: Request):
         raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
 
     init_data = body.get("initData")
-    if not init_data or not validate_init_data(init_data, BOT_TOKEN):
+    if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
 
     return JSONResponse({
