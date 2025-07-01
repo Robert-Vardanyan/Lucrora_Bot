@@ -28,7 +28,7 @@ app = FastAPI()
 # Разрешаем запросы с фронтенда Telegram Mini App
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://lucrora.vercel.app"],  # или ["*"] для тестов
+    allow_origins=["*"],  # или ["*"] для тестов
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
