@@ -23,21 +23,30 @@ BOT_TOKEN = "7732340254:AAGA0leeQI7riOxaVfiT3zzj_zAsMotV8LA"  # твой ток�
 
 def validate_init_data(init_data: str, bot_token: str) -> bool:
     try:
+        print("➡️ init_data raw:", init_data)
+
         data = dict(parse_qsl(init_data, keep_blank_values=True))
+        print("🔍 Parsed data:", data)
 
         received_hash = data.pop("hash", None)
         if not received_hash:
+            print("❌ hash not found")
             return False
 
         data_check_arr = [f"{k}={v}" for k, v in sorted(data.items())]
         data_check_string = "\n".join(data_check_arr)
+        print("📦 data_check_string:\n", data_check_string)
 
         secret_key = hashlib.sha256(bot_token.encode()).digest()
         hmac_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        print("📡 hmac_hash:", hmac_hash)
+        print("📩 received_hash:", received_hash)
 
-        return hmac_hash == received_hash
+        is_valid = hmac_hash == received_hash
+        print("✅ VALID:", is_valid)
+        return is_valid
     except Exception as e:
-        print("Ошибка при валидации:", e)
+        print("❗ Exception:", e)
         return False
 
 
