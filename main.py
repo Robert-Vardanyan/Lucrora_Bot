@@ -20,7 +20,6 @@ BOT_TOKEN = "7732340254:AAGA0leeQI7riOxaVfiT3zzj_zAsMotV8LA"  # твой ток�
 
 
 
-
 def validate_init_data(init_data: str, bot_token: str) -> bool:
     try:
         print("➡️ init_data raw:", init_data)
@@ -28,7 +27,6 @@ def validate_init_data(init_data: str, bot_token: str) -> bool:
         data = dict(parse_qsl(init_data, keep_blank_values=True))
         print("🔍 Parsed data:", data)
 
-        # Убираем hash и signature — они НЕ участвуют в HMAC
         received_hash = data.pop("hash", None)
         data.pop("signature", None)
 
@@ -36,8 +34,8 @@ def validate_init_data(init_data: str, bot_token: str) -> bool:
             print("❌ hash not found")
             return False
 
-        # Готовим data_check_string
-        data_check_arr = [f"{k}={v}" for k, v in sorted(data.items())]
+        # ТОЛЬКО это — правильный порядок
+        data_check_arr = sorted(f"{k}={v}" for k, v in data.items())
         data_check_string = "\n".join(data_check_arr)
 
         print("📦 data_check_string:\n", data_check_string)
@@ -53,6 +51,7 @@ def validate_init_data(init_data: str, bot_token: str) -> bool:
     except Exception as e:
         print("❗ Exception:", e)
         return False
+
 
 
 @app.post("/api/init")
