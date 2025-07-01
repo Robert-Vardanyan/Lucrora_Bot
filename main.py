@@ -15,7 +15,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BOT_TOKEN = "..."  # твой токен
+BOT_TOKEN = "7732340254:AAGA0leeQI7riOxaVfiT3zzj_zAsMotV8LA"  # твой токен
 
 def validate_init_data(init_data: str, bot_token: str) -> bool:
     try:
