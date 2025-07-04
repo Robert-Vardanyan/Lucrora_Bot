@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from dotenv import load_dotenv
-from passlib.context import CryptContext # Импортируем для хеширования паролей
+from passlib.context import CryptContext
 
 # --- Импортируем наши ORM-модели и утилиты БД ---
 from app.database import engine, create_db_tables, drop_db_tables, get_async_session
@@ -35,7 +35,6 @@ DROP_DB_ON_STARTUP = os.getenv("DROP_DB_ON_STARTUP", "False").lower() == "true"
 app = FastAPI()
 
 # === Инициализация контекста для хеширования паролей ===
-# default='bcrypt' указывает, что bcrypt будет алгоритмом по умолчанию
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # CORS для Mini App
@@ -261,11 +260,9 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     # ПРОВЕРЯЕМ ПАРОЛЬ С ПОМОЩЬЮ BCRYPT
-    # verify() теперь сравнивает сырой пароль с хешем из БД
     if not pwd_context.verify(password, user.password_hash): # <--- Это будет работать корректно
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
-    # Эта проверка должна быть после проверки пароля, так как она относится к Telegram ID
     if user.id != telegram_id:
         raise HTTPException(status_code=403, detail="Account not linked to this Telegram ID. Please re-register or contact support.")
 
@@ -284,9 +281,7 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
         "first_name": user.first_name
     }
 
-
 # === Эндпоинт для повторной отправки письма (если нужно) ===
-# Если этот функционал неактуален для вашей мини-аппки, его можно удалить.
 @app.post("/api/resend_email")
 async def api_resend_email(request: Request):
     try:
@@ -300,15 +295,19 @@ async def api_resend_email(request: Request):
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
 
-    # Здесь должна быть логика отправки письма
     print(f"Запрос на повторную отправку письма на {email}")
-    # Например: send_email_verification(email)
-    # Сейчас просто заглушка:
-    if email: # Простая проверка
+    if email:
         return {"ok": True, "message": "Email has been sent."}
     else:
         raise HTTPException(status_code=400, detail="Email is required.")
 
+# === Функция для запуска Aiogram бота ===
+async def start_bot():
+    """
+    Запускает polling Aiogram бота.
+    """
+    print("Aiogram polling запущен!")
+    await dp.start_polling(bot)
 
 # === Запуск бота и подключение к БД на старте FastAPI ===
 @app.on_event("startup")
@@ -328,9 +327,10 @@ async def on_startup():
         raise
 
     print("Запускаем aiogram polling...")
-    asyncio.create_task(start_bot())
+    asyncio.create_task(start_bot()) # <--- Теперь start_bot() определен
 
 # === Закрытие пула подключений к БД при завершении работы FastAPI ===
 @app.on_event("shutdown")
 async def on_shutdown():
     print("FastAPI завершил работу.")
+    await bot.session.close() # Закрываем сессию бота при завершении работы
