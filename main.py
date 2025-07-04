@@ -146,7 +146,7 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
 
     init_data = body.get("telegramInitData")
     username = body.get("username")
-    password = body.get("password") # Это хешированный SHA-256 пароль с фронтенда
+    password = body.get("password") # <--- Теперь это СЫРОЙ пароль с фронтенда
     referral_code = body.get("referralCode")
 
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
@@ -178,10 +178,8 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
         if existing_user_by_username:
             raise HTTPException(status_code=409, detail="Username already taken")
 
-        # ХЕШИРУЕМ ПАРОЛЬ С ПОМОЩЬЮ BCRYPT ПЕРЕД СОХРАНЕНИЕМ В БД
-        hashed_password_bcrypt = pwd_context.hash(password) # Хешируем полученный с фронтенда SHA-256 хеш
-        # ИЛИ, если вы хотите хешировать исходный пароль (не рекомендуется передавать в открытом виде с фронтенда)
-        # hashedPassword = pwd_context.hash(body.get("rawPassword")) # Если бы вы передавали rawPassword
+        # ХЕШИРУЕМ СЫРОЙ ПАРОЛЬ С ПОМОЩЬЮ BCRYPT ПЕРЕД СОХРАНЕНИЕМ В БД
+        hashed_password_bcrypt = pwd_context.hash(password) # <--- Правильно хешируем сырой пароль
 
         new_user = User(
             id=telegram_id,
@@ -221,7 +219,7 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
         await db.rollback()
         print(f"Ошибка целостности при регистрации пользователя: {e}")
         if "users_username_key" in str(e):
-             raise HTTPException(status_code=409, detail="Username already taken.")
+            raise HTTPException(status_code=409, detail="Username already taken.")
         raise HTTPException(status_code=500, detail=f"Database integrity error during registration: {e}")
     except Exception as e:
         await db.rollback()
@@ -238,7 +236,7 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
 
     init_data = body.get("telegramInitData")
     username = body.get("username")
-    password = body.get("password") # Это хешированный SHA-256 пароль с фронтенда
+    password = body.get("password") # <--- Теперь это СЫРОЙ пароль с фронтенда
 
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
@@ -263,10 +261,11 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     # ПРОВЕРЯЕМ ПАРОЛЬ С ПОМОЩЬЮ BCRYPT
-    # verify() сравнивает хешированный пароль из БД с хешем, полученным с фронтенда
-    if not pwd_context.verify(password, user.password_hash):
+    # verify() теперь сравнивает сырой пароль с хешем из БД
+    if not pwd_context.verify(password, user.password_hash): # <--- Это будет работать корректно
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
+    # Эта проверка должна быть после проверки пароля, так как она относится к Telegram ID
     if user.id != telegram_id:
         raise HTTPException(status_code=403, detail="Account not linked to this Telegram ID. Please re-register or contact support.")
 
@@ -335,12 +334,3 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     print("FastAPI завершил работу.")
-
-# === Функция запуска polling ===
-async def start_bot():
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        print("🤖 Запускаем бота...")
-        await dp.start_polling(bot)
-    except Exception as e:
-        print("❌ Ошибка при запуске бота:", e)
