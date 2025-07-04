@@ -1,10 +1,12 @@
+# main.py
+
 import asyncio
 import hmac
 import hashlib
 import os
 from urllib.parse import parse_qsl
 from operator import itemgetter
-import json # Импортируем json для парсинга user из initData
+import json
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
@@ -12,15 +14,26 @@ from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession # Для зависимостей
+from sqlalchemy import select # Для выполнения SELECT запросов
+from sqlalchemy.exc import IntegrityError # Для обработки ошибок уникальности
+
 from dotenv import load_dotenv
+
+# --- Импортируем наши ORM-модели и утилиты БД ---
+from app.database import engine, create_db_tables, drop_db_tables, get_async_session
+from app.models import User, Investment, Transaction, Referral # Импортируем все модели
 
 # === Загрузка переменных окружения ===
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBAPP_URL = os.getenv("WEBAPP_URL")
+# Новая переменная для управления сбросом/созданием БД
+# Установите в .env: DROP_DB_ON_STARTUP=True для сброса и создания заново
+# Или DROP_DB_ON_STARTUP=False (или просто не устанавливайте) для обычного старта
+DROP_DB_ON_STARTUP = os.getenv("DROP_DB_ON_STARTUP", "False").lower() == "true"
 
 # === Инициализация FastAPI ===
 app = FastAPI()
@@ -28,7 +41,7 @@ app = FastAPI()
 # CORS для Mini App
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://lucrora.vercel.app", "https://lucrora-bot.onrender.com", "http://localhost:8000"], # Добавил localhost для локальной разработки
+    allow_origins=["https://lucrora.vercel.app", "https://lucrora-bot.onrender.com", "http://localhost:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,21 +50,6 @@ app.add_middleware(
 # === Инициализация Telegram-бота ===
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-
-# === ИМИТАЦИЯ БАЗЫ ДАННЫХ ПОЛЬЗОВАТЕЛЕЙ В ПАМЯТИ ===
-# В реальном приложении это была бы настоящая база данных (PostgreSQL, MongoDB, Firestore и т.д.)
-# Ключ: Telegram User ID (str)
-# Значение: dict с данными пользователя (username, main_balance, bonus_balance, lucrum_balance и т.д.)
-user_db = {}
-# Пример зарегистрированного пользователя для тестирования:
-# user_db['123456789'] = {
-#     "username": "testuser",
-#     "main_balance": 100.50,
-#     "bonus_balance": 25.00,
-#     "lucrum_balance": 50.00,
-#     "total_invested": 200.00,
-#     "total_withdrawn": 50.00
-# }
 
 # === Кнопка Mini App ===
 webapp_button = InlineKeyboardMarkup(inline_keyboard=[
@@ -88,7 +86,7 @@ def check_webapp_signature(init_data: str, token: str) -> bool:
 
 # === Эндпоинт инициализации Mini App ===
 @app.post("/api/init")
-async def api_init(request: Request):
+async def api_init(request: Request, db: AsyncSession = Depends(get_async_session)): # Внедряем сессию БД
     try:
         body = await request.json()
     except Exception:
@@ -98,46 +96,57 @@ async def api_init(request: Request):
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
 
-    # --- ИЗМЕНЕНИЕ: Извлекаем user_id из init_data ---
     user_data_str = dict(parse_qsl(init_data)).get('user')
     if not user_data_str:
         raise HTTPException(status_code=400, detail="User data not found in initData")
 
     try:
         user_info = json.loads(user_data_str)
-        telegram_id = str(user_info.get('id'))
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid user data JSON in initData")
+        telegram_id = int(user_info.get('id')) # Преобразуем в int для использования с BigInteger
+        first_name = user_info.get('first_name', '')
+        last_name = user_info.get('last_name', '')
+        username_tg = user_info.get('username', '') # Username из Telegram
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
 
-    # --- ИЗМЕНЕНИЕ: Проверяем, зарегистрирован ли пользователь ---
-    if telegram_id in user_db:
-        user_data = user_db[telegram_id]
-        return JSONResponse({
+    # --- Использование SQLAlchemy ORM для запроса пользователя ---
+    # stmt = select(User).where(User.id == telegram_id)
+    # result = await db.execute(stmt)
+    # user = result.scalar_one_or_none()
+
+    # Более простой способ для запроса по первичному ключу
+    user = await db.get(User, telegram_id) # Запрос пользователя по первичному ключу
+
+    if user:
+        # Пользователь найден, он зарегистрирован
+        return {
             "ok": True,
-            "isRegistered": True, # Пользователь зарегистрирован
-            "main_balance": user_data.get("main_balance", 0.0),
-            "bonus_balance": user_data.get("bonus_balance", 0.0),
-            "lucrum_balance": user_data.get("lucrum_balance", 0.0),
-            "total_invested": user_data.get("total_invested", 0.0),
-            "total_withdrawn": user_data.get("total_withdrawn", 0.0),
-            "username": user_data.get("username", "N/A") # Добавил username, чтобы frontend мог его отобразить
-        })
+            "isRegistered": True,
+            "main_balance": float(user.main_balance),
+            "bonus_balance": float(user.bonus_balance),
+            "lucrum_balance": float(user.lucrum_balance),
+            "total_invested": float(user.total_invested),
+            "total_withdrawn": float(user.total_withdrawn),
+            "username": user.username,
+            "first_name": user.first_name
+        }
     else:
-        # Пользователь не зарегистрирован, возвращаем дефолтные значения и isRegistered=False
-        return JSONResponse({
+        # Пользователь не найден, он не зарегистрирован
+        return {
             "ok": True,
-            "isRegistered": False, # Пользователь не зарегистрирован
+            "isRegistered": False,
             "main_balance": 0.0,
             "bonus_balance": 0.0,
             "lucrum_balance": 0.0,
             "total_invested": 0.0,
             "total_withdrawn": 0.0,
-            "username": user_info.get("first_name", "Пользователь") # Используем имя из Telegram для нового пользователя
-        })
+            "username": username_tg or first_name or "Пользователь",
+            "first_name": first_name
+        }
 
 # === НОВЫЙ ЭНДПОИНТ: Регистрация пользователя ===
 @app.post("/api/register")
-async def api_register(request: Request):
+async def api_register(request: Request, db: AsyncSession = Depends(get_async_session)): # Внедряем сессию БД
     try:
         body = await request.json()
     except Exception:
@@ -145,7 +154,7 @@ async def api_register(request: Request):
 
     init_data = body.get("telegramInitData")
     username = body.get("username")
-    password = body.get("password") # В реальном приложении пароли НЕ хранятся в открытом виде!
+    password = body.get("password") # НАПОМИНАНИЕ: В реальном приложении НЕ храните пароли в открытом виде!
     referral_code = body.get("referralCode")
 
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
@@ -160,46 +169,104 @@ async def api_register(request: Request):
 
     try:
         user_info = json.loads(user_data_str)
-        telegram_id = str(user_info.get('id'))
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid user data JSON in initData")
+        telegram_id = int(user_info.get('id'))
+        first_name = user_info.get('first_name', '')
+        last_name = user_info.get('last_name', '')
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
 
-    # Проверяем, не зарегистрирован ли пользователь уже
-    if telegram_id in user_db:
-        raise HTTPException(status_code=409, detail="User already registered")
+    # --- Использование SQLAlchemy ORM для регистрации пользователя ---
+    try:
+        # Проверяем, не зарегистрирован ли пользователь уже по Telegram ID
+        existing_user_by_id = await db.get(User, telegram_id)
+        if existing_user_by_id:
+            raise HTTPException(status_code=409, detail="User already registered with this Telegram ID")
 
-    # Проверяем, не занято ли имя пользователя (простая проверка для примера)
-    for uid, data in user_db.items():
-        if data.get("username") == username:
+        # Проверяем, не занято ли имя пользователя
+        stmt_check_username = select(User).where(User.username == username)
+        existing_user_by_username = (await db.execute(stmt_check_username)).scalar_one_or_none()
+        if existing_user_by_username:
             raise HTTPException(status_code=409, detail="Username already taken")
 
-    # --- ИЗМЕНЕНИЕ: Регистрируем нового пользователя в имитированной БД ---
-    user_db[telegram_id] = {
-        "username": username,
-        "password": password, # Опять же, в реальном приложении так не делают!
-        "referral_code": referral_code,
-        "main_balance": 0.0,
-        "bonus_balance": 0.0,
-        "lucrum_balance": 0.0,
-        "total_invested": 0.0,
-        "total_withdrawn": 0.0,
-        "registration_date": "01.01.2025" # Заглушка
-    }
-    print(f"Пользователь {username} (ID: {telegram_id}) успешно зарегистрирован.")
+        # Создаем нового пользователя
+        new_user = User(
+            id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            password_hash=password # НАПОМИНАНИЕ: Замените на хеширование!
+        )
+        db.add(new_user)
+        await db.commit() # Сохраняем пользователя, чтобы его ID был доступен для реферала
+        await db.refresh(new_user) # Обновляем объект, чтобы получить актуальные данные из БД (например, даты по умолчанию)
 
-    return JSONResponse({
-        "ok": True,
-        "message": "Registration successful!",
-        "user_id": telegram_id,
-        "username": username
-    })
+        # Если есть реферальный код, добавляем запись в таблицу referrals
+        if referral_code:
+            stmt_referrer = select(User).where(User.username == referral_code)
+            referrer = (await db.execute(stmt_referrer)).scalar_one_or_none()
+            if referrer:
+                new_referral = Referral(
+                    referrer_id=referrer.id,
+                    referred_id=new_user.id,
+                    referral_level=1
+                )
+                db.add(new_referral)
+                await db.commit() # Сохраняем реферальную связь
+                print(f"Добавлена реферальная связь: {referrer.username} (ID: {referrer.id}) пригласил {new_user.username} (ID: {new_user.id})")
+            else:
+                print(f"Реферальный код '{referral_code}' не найден.")
+                # Опционально: можно вернуть ошибку, если реферальный код обязателен
+
+        print(f"Пользователь {username} (ID: {telegram_id}) успешно зарегистрирован в БД.")
+
+        return {
+            "ok": True,
+            "message": "Registration successful!",
+            "user_id": str(telegram_id), # Возвращаем str, так как на фронтенде может быть str
+            "username": username
+        }
+    except IntegrityError as e:
+        await db.rollback() # Откатываем транзакцию в случае ошибки
+        print(f"Ошибка целостности при регистрации пользователя: {e}")
+        # Пример обработки конкретных ошибок IntegrityError
+        if "users_username_key" in str(e): # Замените на фактическое имя уникального индекса, если оно другое
+             raise HTTPException(status_code=409, detail="Username already taken.")
+        # Добавьте другие проверки на уникальность, если они нужны
+        raise HTTPException(status_code=500, detail=f"Database integrity error during registration: {e}")
+    except Exception as e:
+        await db.rollback() # Откатываем транзакцию в случае любой другой ошибки
+        print(f"Общая ошибка при регистрации пользователя: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error during registration: {e}")
 
 
-# === Запуск бота на старте FastAPI ===
+# === Запуск бота и подключение к БД на старте FastAPI ===
 @app.on_event("startup")
 async def on_startup():
-    print("🚀 FastAPI стартовал. Запускаем aiogram polling...")
+    print("🚀 FastAPI стартовал.")
+    try:
+        if DROP_DB_ON_STARTUP:
+            print("❗ Переменная DROP_DB_ON_STARTUP=True. Удаляю все таблицы...")
+            await drop_db_tables()
+            print("✅ Все таблицы успешно удалены.")
+
+        print("Создаю/проверяю таблицы базы данных...")
+        await create_db_tables()
+        print("✅ Структура базы данных готова.")
+    except Exception as e:
+        print(f"❌ Ошибка при инициализации базы данных: {e}")
+        # В продакшене, возможно, стоит завершить работу приложения, если нет подключения к БД
+        raise
+
+    print("Запускаем aiogram polling...")
     asyncio.create_task(start_bot())
+
+# === Закрытие пула подключений к БД при завершении работы FastAPI ===
+@app.on_event("shutdown")
+async def on_shutdown():
+    # Движок SQLAlchemy закрывается автоматически при завершении процесса,
+    # но можно добавить явное закрытие, если требуется.
+    # await engine.dispose()
+    print("FastAPI завершил работу.")
 
 # === Функция запуска polling ===
 async def start_bot():
