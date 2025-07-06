@@ -1,3 +1,4 @@
+# Assuming this is your main FastAPI file
 import asyncio
 import hmac
 import hashlib
@@ -23,7 +24,7 @@ from passlib.context import CryptContext
 
 # --- Импортируем наши ORM-модели и утилиты БД ---
 from app.database import engine, create_db_tables, drop_db_tables, get_async_session
-from app.models import User, Investment, Transaction, Referral
+from app.models import User, Investment, Transaction, Referral # Ensure User is imported
 
 # === Загрузка переменных окружения ===
 load_dotenv()
@@ -120,7 +121,9 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
             "total_invested": float(user.total_invested),
             "total_withdrawn": float(user.total_withdrawn),
             "username": user.username,
-            "first_name": user.first_name
+            "first_name": user.first_name,
+            # Ensure registration_date is sent as a string (e.g., ISO format)
+            "registration_date": user.registration_date.isoformat() if user.registration_date else None
         }
     else:
         return {
@@ -132,7 +135,8 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
             "total_invested": 0.0,
             "total_withdrawn": 0.0,
             "username": username_tg or first_name or "Пользователь",
-            "first_name": first_name
+            "first_name": first_name,
+            "registration_date": None # No registration date if not registered
         }
 
 # === НОВЫЙ ЭНДПОИНТ: Регистрация пользователя ===
@@ -145,7 +149,7 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
 
     init_data = body.get("telegramInitData")
     username = body.get("username")
-    password = body.get("password") # <--- Теперь это СЫРОЙ пароль с фронтенда
+    password = body.get("password")
     referral_code = body.get("referralCode")
 
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
@@ -166,7 +170,6 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
     except (json.JSONDecodeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
 
-    # --- Использование SQLAlchemy ORM для регистрации пользователя ---
     try:
         existing_user_by_id = await db.get(User, telegram_id)
         if existing_user_by_id:
@@ -177,15 +180,14 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
         if existing_user_by_username:
             raise HTTPException(status_code=409, detail="Username already taken")
 
-        # ХЕШИРУЕМ СЫРОЙ ПАРОЛЬ С ПОМОЩЬЮ BCRYPT ПЕРЕД СОХРАНЕНИЕМ В БД
-        hashed_password_bcrypt = pwd_context.hash(password) # <--- Правильно хешируем сырой пароль
+        hashed_password_bcrypt = pwd_context.hash(password)
 
         new_user = User(
             id=telegram_id,
             username=username,
             first_name=first_name,
             last_name=last_name,
-            password_hash=hashed_password_bcrypt # Сохраняем bcrypt хеш
+            password_hash=hashed_password_bcrypt
         )
         db.add(new_user)
         await db.commit()
@@ -235,7 +237,7 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
 
     init_data = body.get("telegramInitData")
     username = body.get("username")
-    password = body.get("password") # <--- Теперь это СЫРОЙ пароль с фронтенда
+    password = body.get("password")
 
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
@@ -259,8 +261,7 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
-    # ПРОВЕРЯЕМ ПАРОЛЬ С ПОМОЩЬЮ BCRYPT
-    if not pwd_context.verify(password, user.password_hash): # <--- Это будет работать корректно
+    if not pwd_context.verify(password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid username or password.")
 
     if user.id != telegram_id:
@@ -278,7 +279,53 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
         "total_invested": float(user.total_invested),
         "total_withdrawn": float(user.total_withdrawn),
         "username": user.username,
-        "first_name": user.first_name
+        "first_name": user.first_name,
+        "registration_date": user.registration_date.isoformat() if user.registration_date else None
+    }
+
+# --- НОВЫЙ ЭНДПОИНТ: Получение данных профиля пользователя ---
+@app.post("/api/profile") # Using POST as initData is in the body
+async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
+
+    init_data = body.get("telegramInitData")
+    if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid Telegram initData")
+
+    user_data_str = dict(parse_qsl(init_data)).get('user')
+    if not user_data_str:
+        raise HTTPException(status_code=400, detail="User data not found in initData")
+
+    try:
+        user_info = json.loads(user_data_str)
+        telegram_id = int(user_info.get('id'))
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
+
+    user = await db.get(User, telegram_id)
+
+    if not user:
+        # If user is not found, it means they are not registered in your app's DB
+        raise HTTPException(status_code=404, detail="User profile not found. Please register.")
+
+
+    print(f"Запрос профиля пользователя {user.username} (ID: {user.id})")
+    
+    # Return relevant profile data
+    return {
+        "ok": True,
+        "id": user.id,
+        "username": user.username,
+        "first_name": user.first_name,
+        "registration_date": user.registration_date.isoformat() if user.registration_date else None,
+        "total_invested": float(user.total_invested),
+        "total_withdrawn": float(user.total_withdrawn),
+        "main_balance": float(user.main_balance),
+        "bonus_balance": float(user.bonus_balance),
+        "lucrum_balance": float(user.lucrum_balance)
     }
 
 # === Эндпоинт для повторной отправки письма (если нужно) ===
