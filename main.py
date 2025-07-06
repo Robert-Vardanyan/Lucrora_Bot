@@ -292,6 +292,7 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
 # --- НОВЫЙ ЭНДПОИНТ: Получение данных профиля пользователя ---
 @app.post("/api/profile") # Using POST as initData is in the body
 async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
+    print("Получен запрос на получение профиля пользователя.")
     
     try:
         body = await request.json()
