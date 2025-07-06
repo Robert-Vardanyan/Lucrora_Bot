@@ -12,6 +12,7 @@ from app.database import get_async_session
 from app.models import User, Referral # Make sure Referral is imported from app.models
 from app.utils import check_webapp_signature, parse_qsl # Assuming parse_qsl is also in app.utils
 
+import os
 from dotenv import load_dotenv
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
