@@ -86,7 +86,7 @@ async def get_referral_data(request: Request, db: AsyncSession = Depends(get_asy
 
     # 1. Generate Referral Link
     # Replace 'YourBot' with your actual bot username
-    referral_link = f"https://t.me/YourBot?start=ref_{current_user.id}"
+    referral_link = f"https://t.me/lucrora_bot?start=ref_{current_user.id}"
 
     # 2. Calculate Total Referral Earnings
     # Sum of bonus_earned for all referrals made by this user
