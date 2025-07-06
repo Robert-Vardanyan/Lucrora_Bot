@@ -93,16 +93,23 @@ def check_webapp_signature(init_data: str, token: str) -> bool:
 # === Эндпоинт инициализации Mini App ===
 @app.post("/api/init")
 async def api_init(request: Request, db: AsyncSession = Depends(get_async_session)):
+    print("Получен запрос на инициализацию Mini App.")
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
 
+    print(f"Получено тело запроса: {body}")
     init_data = body.get("initData")
+    print(f"Полученные данные инициализации: {init_data}")
+
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
 
+    print("Проверка подписи initData прошла успешно.")
     user_data_str = dict(parse_qsl(init_data)).get('user')
+    print(f"Извлеченные данные пользователя: {user_data_str}")
+
     if not user_data_str:
         raise HTTPException(status_code=400, detail="User data not found in initData")
 
@@ -115,7 +122,9 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
     except (json.JSONDecodeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
 
+    print(f"Пользователь: {first_name} {last_name} (ID: {telegram_id}, Username: {username_tg})")
     user = await db.get(User, telegram_id)
+    print(f"Найден пользователь: {user}")
 
     if user:
         return {
