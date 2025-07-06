@@ -33,6 +33,8 @@ from app.routers import investments #
 # --- Импортируем функцию для проверки подписи initData ---
 from app.utils import check_webapp_signature 
 
+# --- Импортируем реферальную систему ---
+from app import referrals
 
 # === Загрузка переменных окружения ===
 load_dotenv()
@@ -395,6 +397,6 @@ async def on_shutdown():
     
     await bot.session.close() # Закрываем сессию бота при завершении работы
 
-# --- ОБЯЗАТЕЛЬНО: Включаем роутер для инвестиций ---
+# === Регистрация роутеров  ===
 app.include_router(investments.router) 
-
+app.include_router(referrals.router)  
