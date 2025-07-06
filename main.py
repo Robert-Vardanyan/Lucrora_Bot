@@ -7,11 +7,12 @@ from urllib.parse import parse_qsl
 from operator import itemgetter
 import json
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.methods import SetWebhook, DeleteWebhook # Импортируем методы для вебхуков
 
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,8 +30,13 @@ from app.models import User, Investment, Transaction, Referral # Ensure User is 
 # === Загрузка переменных окружения ===
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBAPP_URL = os.getenv("WEBAPP_URL")
+WEBAPP_URL = os.getenv("WEBAPP_URL") # URL вашего Mini App
+# БАЗОВЫЙ URL ВАШЕГО СЕРВЕРА FASTAPI. ЭТО КРАЙНЕ ВАЖНО ДЛЯ ВЕБХУКОВ!
+# Например: "https://your-app-name.onrender.com"
+# Убедитесь, что это переменная окружения или статически заданный URL вашего развернутого FastAPI.
+BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL") 
 DROP_DB_ON_STARTUP = os.getenv("DROP_DB_ON_STARTUP", "False").lower() == "true"
+
 
 # === Инициализация FastAPI ===
 app = FastAPI()
@@ -63,7 +69,7 @@ async def start_handler(message: Message):
         "👋 Привет! Нажми кнопку ниже, чтобы открыть Mini App:",
         reply_markup=webapp_button
     )
-    await message.delete()
+    # await message.delete() # Удаление сообщения может быть нежелательно для пользователя
 
 # === Подпись инициализации Mini App ===
 def check_webapp_signature(init_data: str, token: str) -> bool:
@@ -287,7 +293,8 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
 @app.post("/api/profile") # Using POST as initData is in the body
 async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
     
-    print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})")
+    # Исправлена ошибка: user не определен до этой строки
+    # print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})") 
     
     try:
         body = await request.json()
@@ -351,13 +358,14 @@ async def api_resend_email(request: Request):
     else:
         raise HTTPException(status_code=400, detail="Email is required.")
 
-# === Функция для запуска Aiogram бота ===
-async def start_bot():
-    """
-    Запускает polling Aiogram бота.
-    """
-    print("Aiogram polling запущен!")
-    await dp.start_polling(bot)
+# === Эндпоинт для обработки вебхуков от Telegram ===
+# Этот эндпоинт будет получать все обновления от Telegram
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    update = types.Update.model_validate(await request.json(), context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return {"ok": True}
+
 
 # === Запуск бота и подключение к БД на старте FastAPI ===
 @app.on_event("startup")
@@ -376,11 +384,36 @@ async def on_startup():
         print(f"❌ Ошибка при инициализации базы данных: {e}")
         raise
 
-    print("Запускаем aiogram polling...")
-    asyncio.create_task(start_bot()) # <--- Теперь start_bot() определен
+    # --- Настройка вебхуков ---
+    if not BOT_TOKEN or not BASE_WEBHOOK_URL:
+        print("❌ Не указан BOT_TOKEN или BASE_WEBHOOK_URL. Вебхуки не будут настроены.")
+        # Возможно, здесь стоит выйти из приложения или выбросить исключение
+        return 
+
+    webhook_url = f"{BASE_WEBHOOK_URL}/webhook"
+    print(f"Устанавливаю вебхук на: {webhook_url}")
+    try:
+        await bot(SetWebhook(url=webhook_url))
+        print("✅ Вебхук успешно установлен.")
+    except Exception as e:
+        print(f"❌ Ошибка при установке вебхука: {e}")
+        # Если вебхук не удалось установить, это критическая ошибка для бота
+        # Вы можете решить, стоит ли здесь остановить запуск приложения
+        raise
+
+    print("Aiogram вебхуки настроены и ожидают обновлений.")
+
 
 # === Закрытие пула подключений к БД при завершении работы FastAPI ===
 @app.on_event("shutdown")
 async def on_shutdown():
     print("FastAPI завершил работу.")
+    # При завершении работы рекомендуется удалить вебхук, чтобы избежать проблем.
+    print("Удаляю вебхук...")
+    try:
+        await bot(DeleteWebhook())
+        print("✅ Вебхук успешно удален.")
+    except Exception as e:
+        print(f"❌ Ошибка при удалении вебхука: {e}")
+    
     await bot.session.close() # Закрываем сессию бота при завершении работы
