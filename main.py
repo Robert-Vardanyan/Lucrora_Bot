@@ -310,54 +310,54 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
         "registration_date": user.registration_date.isoformat() if user.registration_date else None
     }
 
-# --- НОВЫЙ ЭНДПОИНТ: Получение данных профиля пользователя ---
-@app.post("/api/profile") # Using POST as initData is in the body
-async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
-    print("Получен запрос на получение профиля пользователя.")
+# # --- НОВЫЙ ЭНДПОИНТ: Получение данных профиля пользователя ---
+# @app.post("/api/profile") # Using POST as initData is in the body
+# async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
+#     print("Получен запрос на получение профиля пользователя.")
     
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
+#     try:
+#         body = await request.json()
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
 
-    init_data = body.get("telegramInitData")
-    if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid Telegram initData")
+#     init_data = body.get("telegramInitData")
+#     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
+#         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
 
-    user_data_str = dict(parse_qsl(init_data)).get('user')
-    print(f"Полученные данные пользователя: {user_data_str}")
+#     user_data_str = dict(parse_qsl(init_data)).get('user')
+#     print(f"Полученные данные пользователя: {user_data_str}")
 
-    if not user_data_str:
-        raise HTTPException(status_code=400, detail="User data not found in initData")
+#     if not user_data_str:
+#         raise HTTPException(status_code=400, detail="User data not found in initData")
 
-    try:
-        user_info = json.loads(user_data_str)
-        telegram_id = int(user_info.get('id'))
-    except (json.JSONDecodeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
+#     try:
+#         user_info = json.loads(user_data_str)
+#         telegram_id = int(user_info.get('id'))
+#     except (json.JSONDecodeError, ValueError):
+#         raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
 
-    user = await db.get(User, telegram_id)
+#     user = await db.get(User, telegram_id)
 
-    if not user:
-        # If user is not found, it means they are not registered in your app's DB
-        raise HTTPException(status_code=404, detail="User profile not found. Please register.")
+#     if not user:
+#         # If user is not found, it means they are not registered in your app's DB
+#         raise HTTPException(status_code=404, detail="User profile not found. Please register.")
 
 
-    print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})")
+#     print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})")
 
-    # Return relevant profile data
-    return {
-        "ok": True,
-        "id": user.id,
-        "username": user.username,
-        "first_name": user.first_name,
-        "registration_date": user.registration_date.isoformat() if user.registration_date else None,
-        "total_invested": float(user.total_invested),
-        "total_withdrawn": float(user.total_withdrawn),
-        "main_balance": float(user.main_balance),
-        "bonus_balance": float(user.bonus_balance),
-        "lucrum_balance": float(user.lucrum_balance)
-    }
+#     # Return relevant profile data
+#     return {
+#         "ok": True,
+#         "id": user.id,
+#         "username": user.username,
+#         "first_name": user.first_name,
+#         "registration_date": user.registration_date.isoformat() if user.registration_date else None,
+#         "total_invested": float(user.total_invested),
+#         "total_withdrawn": float(user.total_withdrawn),
+#         "main_balance": float(user.main_balance),
+#         "bonus_balance": float(user.bonus_balance),
+#         "lucrum_balance": float(user.lucrum_balance)
+#     }
 
 # === Эндпоинт для повторной отправки письма (если нужно) ===
 @app.post("/api/resend_email")
