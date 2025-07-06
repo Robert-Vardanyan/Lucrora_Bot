@@ -123,6 +123,8 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
         raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
 
     print(f"Пользователь: {first_name} {last_name} (ID: {telegram_id}, Username: {username_tg})")
+    print("Проверяю наличие пользователя в базе данных...")
+    print(f"Ищем пользователя с Telegram ID: {type(telegram_id)} - {telegram_id} ")
     user = await db.get(User, telegram_id)
     print(f"Найден пользователь: {user}")
 
