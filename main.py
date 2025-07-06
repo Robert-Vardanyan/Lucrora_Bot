@@ -286,6 +286,9 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
 # --- НОВЫЙ ЭНДПОИНТ: Получение данных профиля пользователя ---
 @app.post("/api/profile") # Using POST as initData is in the body
 async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
+    
+    print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})")
+    
     try:
         body = await request.json()
     except Exception:
@@ -312,8 +315,8 @@ async def api_profile(request: Request, db: AsyncSession = Depends(get_async_ses
         raise HTTPException(status_code=404, detail="User profile not found. Please register.")
 
 
-    print(f"Запрос профиля пользователя {user.username} (ID: {user.id})")
-    
+    print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})")
+
     # Return relevant profile data
     return {
         "ok": True,
