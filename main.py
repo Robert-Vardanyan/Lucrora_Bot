@@ -126,9 +126,17 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
     print("Проверяю наличие пользователя в базе данных...")
     print(f"Ищем пользователя с Telegram ID: {type(telegram_id)} - {telegram_id} ")
     user = await db.get(User, telegram_id)
-    print(f"Найден пользователь: {user}")
+    print(f"Найден пользователь: {type(user)} {user}")
 
     if user:
+        print(f"Пользователь {user.username} (ID: {user.id}) уже зарегистрирован.")
+        # Возвращаем данные пользователя в формате, ожидаемом Mini App
+        print(f"Возвращаем данные пользователя: {user}")
+        print(f"Баланс пользователя: main_balance={user.main_balance}, bonus_balance={user.bonus_balance}, lucrum_balance={user.lucrum_balance}")
+        print(f"Инвестировано: {user.total_invested}, Выведено: {user.total_withdrawn}")
+        print(f"Имя пользователя: {user.username}, Имя: {user.first_name}")
+        print(f"Фамилия пользователя: {user.last_name}")
+        print(f"Дата регистрации пользователя: {user.registration_date}")
         return {
             "ok": True,
             "isRegistered": True,
@@ -143,6 +151,8 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
             "registration_date": user.registration_date.isoformat() if user.registration_date else None
         }
     else:
+        print(f"Пользователь {first_name} (ID: {telegram_id}) не найден в базе данных.")
+
         return {
             "ok": True,
             "isRegistered": False,
