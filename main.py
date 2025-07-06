@@ -27,13 +27,17 @@ from passlib.context import CryptContext
 from app.database import engine, create_db_tables, drop_db_tables, get_async_session
 from app.models import User, Investment, Transaction, Referral # Ensure User is imported
 
+# --- Импортируем новый роутер для инвестиций ---
+from app.routers import investments # 
+
+# --- Импортируем функцию для проверки подписи initData ---
+from app.utils import check_webapp_signature 
+
+
 # === Загрузка переменных окружения ===
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBAPP_URL = os.getenv("WEBAPP_URL") # URL вашего Mini App
-# БАЗОВЫЙ URL ВАШЕГО СЕРВЕРА FASTAPI. ЭТО КРАЙНЕ ВАЖНО ДЛЯ ВЕБХУКОВ!
-# Например: "https://your-app-name.onrender.com"
-# Убедитесь, что это переменная окружения или статически заданный URL вашего развернутого FastAPI.
 BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL") 
 DROP_DB_ON_STARTUP = os.getenv("DROP_DB_ON_STARTUP", "False").lower() == "true"
 
@@ -69,46 +73,33 @@ async def start_handler(message: Message):
         "👋 Привет! Нажми кнопку ниже, чтобы открыть Mini App:",
         reply_markup=webapp_button
     )
-    # await message.delete() # Удаление сообщения может быть нежелательно для пользователя
-
-# === Подпись инициализации Mini App ===
-def check_webapp_signature(init_data: str, token: str) -> bool:
-    try:
-        parsed_data = dict(parse_qsl(init_data))
-    except ValueError:
-        return False
-    if "hash" not in parsed_data:
-        return False
-
-    hash_ = parsed_data.pop('hash')
-    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items(), key=itemgetter(0)))
-    secret_key = hmac.new(
-        key=b"WebAppData", msg=token.encode(), digestmod=hashlib.sha256
-    )
-    calculated_hash = hmac.new(
-        key=secret_key.digest(), msg=data_check_string.encode(), digestmod=hashlib.sha256
-    ).hexdigest()
-    return calculated_hash == hash_
+    await message.delete() # Удаление сообщения может быть нежелательно для пользователя
 
 # === Эндпоинт инициализации Mini App ===
 @app.post("/api/init")
 async def api_init(request: Request, db: AsyncSession = Depends(get_async_session)):
-    print("Получен запрос на инициализацию Mini App.")
+    # print("Получен запрос на инициализацию Mini App.")
     try:
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
 
-    print(f"Получено тело запроса: {body}")
+    # print(f"Получено тело запроса: {body}")
     init_data = body.get("initData")
-    print(f"Полученные данные инициализации: {init_data}")
+    # print(f"Полученные данные инициализации: {init_data}")
 
-    if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid Telegram initData")
+    # Проверяем наличие init_data
+    if not init_data:
+        raise HTTPException(status_code=403, detail="Missing Telegram initData")
 
-    print("Проверка подписи initData прошла успешно.")
+    # Теперь, когда мы уверены, что init_data существует, проверяем её подпись
+    if not check_webapp_signature(init_data, BOT_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
+
+
+    # print("Проверка подписи initData (если она была) прошла успешно.")
     user_data_str = dict(parse_qsl(init_data)).get('user')
-    print(f"Извлеченные данные пользователя: {user_data_str}")
+    # print(f"Извлеченные данные пользователя: {user_data_str}")
 
     if not user_data_str:
         raise HTTPException(status_code=400, detail="User data not found in initData")
@@ -122,21 +113,21 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
     except (json.JSONDecodeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
 
-    print(f"Пользователь: {first_name} {last_name} (ID: {telegram_id}, Username: {username_tg})")
-    print("Проверяю наличие пользователя в базе данных...")
-    print(f"Ищем пользователя с Telegram ID: {type(telegram_id)} - {telegram_id} ")
+    # print(f"Пользователь: {first_name} {last_name} (ID: {telegram_id}, Username: {username_tg})")
+    # print("Проверяю наличие пользователя в базе данных...")
+    # print(f"Ищем пользователя с Telegram ID: {type(telegram_id)} - {telegram_id} ")
     user = await db.get(User, telegram_id)
-    print(f"Найден пользователь: {type(user)} {user}")
+    # print(f"Найден пользователь: {type(user)} {user}")
 
     if user:
-        print(f"Пользователь {user.username} (ID: {user.id}) уже зарегистрирован.")
-        # Возвращаем данные пользователя в формате, ожидаемом Mini App
-        print(f"Возвращаем данные пользователя: {user}")
-        print(f"Баланс пользователя: main_balance={user.main_balance}, bonus_balance={user.bonus_balance}, lucrum_balance={user.lucrum_balance}")
-        print(f"Инвестировано: {user.total_invested}, Выведено: {user.total_withdrawn}")
-        print(f"Имя пользователя: {user.username}, Имя: {user.first_name}")
-        print(f"Фамилия пользователя: {user.last_name}")
-        print(f"Дата регистрации пользователя: {user.registration_date}")
+        # print(f"Пользователь {user.username} (ID: {user.id}) уже зарегистрирован.")
+        # # Возвращаем данные пользователя в формате, ожидаемом Mini App
+        # print(f"Возвращаем данные пользователя: {user}")
+        # print(f"Баланс пользователя: main_balance={user.main_balance}, bonus_balance={user.bonus_balance}, lucrum_balance={user.lucrum_balance}")
+        # print(f"Инвестировано: {user.total_invested}, Выведено: {user.total_withdrawn}")
+        # print(f"Имя пользователя: {user.username}, Имя: {user.first_name}")
+        # print(f"Фамилия пользователя: {user.last_name}")
+        # print(f"Дата регистрации пользователя: {user.registration_date}")
         return {
             "ok": True,
             "isRegistered": True,
@@ -151,8 +142,7 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
             "registration_date": user.registration_date.isoformat() if user.registration_date else None
         }
     else:
-        print(f"Пользователь {first_name} (ID: {telegram_id}) не найден в базе данных.")
-
+        # print(f"Пользователь {first_name} (ID: {telegram_id}) не найден в базе данных.")
         return {
             "ok": True,
             "isRegistered": False,
@@ -166,7 +156,7 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
             "registration_date": None # No registration date if not registered
         }
 
-# === НОВЫЙ ЭНДПОИНТ: Регистрация пользователя ===
+# === Регистрация пользователя ===
 @app.post("/api/register")
 async def api_register(request: Request, db: AsyncSession = Depends(get_async_session)):
     try:
@@ -179,8 +169,14 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
     password = body.get("password")
     referral_code = body.get("referralCode")
 
-    if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid Telegram initData")
+    # 1. Проверяем наличие init_data
+    if not init_data:
+        raise HTTPException(status_code=403, detail="Missing Telegram initData.")
+
+    # 2. Если init_data есть, проверяем её подпись
+    if not check_webapp_signature(init_data, BOT_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
+
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password are required")
@@ -266,8 +262,13 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
     username = body.get("username")
     password = body.get("password")
 
-    if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid Telegram initData")
+    # 1. Проверяем наличие init_data
+    if not init_data:
+        raise HTTPException(status_code=403, detail="Missing Telegram initData.")
+
+    # 2. Если init_data есть, проверяем её подпись
+    if not check_webapp_signature(init_data, BOT_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
 
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password are required")
@@ -310,55 +311,6 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
         "registration_date": user.registration_date.isoformat() if user.registration_date else None
     }
 
-# # --- НОВЫЙ ЭНДПОИНТ: Получение данных профиля пользователя ---
-# @app.post("/api/profile") # Using POST as initData is in the body
-# async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
-#     print("Получен запрос на получение профиля пользователя.")
-    
-#     try:
-#         body = await request.json()
-#     except Exception:
-#         raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
-
-#     init_data = body.get("telegramInitData")
-#     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
-#         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
-
-#     user_data_str = dict(parse_qsl(init_data)).get('user')
-#     print(f"Полученные данные пользователя: {user_data_str}")
-
-#     if not user_data_str:
-#         raise HTTPException(status_code=400, detail="User data not found in initData")
-
-#     try:
-#         user_info = json.loads(user_data_str)
-#         telegram_id = int(user_info.get('id'))
-#     except (json.JSONDecodeError, ValueError):
-#         raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
-
-#     user = await db.get(User, telegram_id)
-
-#     if not user:
-#         # If user is not found, it means they are not registered in your app's DB
-#         raise HTTPException(status_code=404, detail="User profile not found. Please register.")
-
-
-#     print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})")
-
-#     # Return relevant profile data
-#     return {
-#         "ok": True,
-#         "id": user.id,
-#         "username": user.username,
-#         "first_name": user.first_name,
-#         "registration_date": user.registration_date.isoformat() if user.registration_date else None,
-#         "total_invested": float(user.total_invested),
-#         "total_withdrawn": float(user.total_withdrawn),
-#         "main_balance": float(user.main_balance),
-#         "bonus_balance": float(user.bonus_balance),
-#         "lucrum_balance": float(user.lucrum_balance)
-#     }
-
 # === Эндпоинт для повторной отправки письма (если нужно) ===
 @app.post("/api/resend_email")
 async def api_resend_email(request: Request):
@@ -370,8 +322,13 @@ async def api_resend_email(request: Request):
     init_data = body.get("telegramInitData")
     email = body.get("email")
 
-    if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid Telegram initData")
+    # 1. Проверяем наличие init_data
+    if not init_data:
+        raise HTTPException(status_code=403, detail="Missing Telegram initData.")
+
+    # 2. Если init_data есть, проверяем её подпись
+    if not check_webapp_signature(init_data, BOT_TOKEN):
+        raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
 
     print(f"Запрос на повторную отправку письма на {email}")
     if email:
@@ -433,8 +390,11 @@ async def on_shutdown():
     print("Удаляю вебхук...")
     try:
         await bot(DeleteWebhook())
-        print("✅ Вебхук успешно удален.")
     except Exception as e:
         print(f"❌ Ошибка при удалении вебхука: {e}")
     
     await bot.session.close() # Закрываем сессию бота при завершении работы
+
+# --- ОБЯЗАТЕЛЬНО: Включаем роутер для инвестиций ---
+app.include_router(investments.router) 
+
