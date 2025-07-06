@@ -293,9 +293,6 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
 @app.post("/api/profile") # Using POST as initData is in the body
 async def api_profile(request: Request, db: AsyncSession = Depends(get_async_session)):
     
-    # Исправлена ошибка: user не определен до этой строки
-    # print(f"OK Запрос профиля пользователя {user.username} (ID: {user.id})") 
-    
     try:
         body = await request.json()
     except Exception:
@@ -306,6 +303,8 @@ async def api_profile(request: Request, db: AsyncSession = Depends(get_async_ses
         raise HTTPException(status_code=403, detail="Invalid Telegram initData")
 
     user_data_str = dict(parse_qsl(init_data)).get('user')
+    print(f"Полученные данные пользователя: {user_data_str}")
+
     if not user_data_str:
         raise HTTPException(status_code=400, detail="User data not found in initData")
 
