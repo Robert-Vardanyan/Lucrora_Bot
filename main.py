@@ -36,6 +36,10 @@ from app.utils import check_webapp_signature
 # --- Импортируем реферальную систему ---
 from app import referrals
 
+# --- Импортируем роутеры для аутентификации и транзакций ---
+from app.transactions import router as transactions_router
+
+
 # === Загрузка переменных окружения ===
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -400,3 +404,4 @@ async def on_shutdown():
 # === Регистрация роутеров  ===
 app.include_router(investments.router) 
 app.include_router(referrals.router)  
+app.include_router(transactions_router)
