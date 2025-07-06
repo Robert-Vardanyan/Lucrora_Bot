@@ -10,8 +10,11 @@ from pydantic import BaseModel
 
 from app.database import get_async_session
 from app.models import User, Referral # Make sure Referral is imported from app.models
-from app.config import BOT_TOKEN
 from app.utils import check_webapp_signature, parse_qsl # Assuming parse_qsl is also in app.utils
+
+from dotenv import load_dotenv
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 router = APIRouter(prefix="/api", tags=["referrals"])
 
