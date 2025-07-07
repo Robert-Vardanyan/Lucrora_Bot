@@ -39,6 +39,8 @@ from app import referrals
 # --- Импортируем роутеры для аутентификации и транзакций ---
 from app.transactions import router as transactions_router
 
+# --- Импортируем роутер для игр ---
+from app.routers import games
 
 # === Загрузка переменных окружения ===
 load_dotenv()
@@ -408,3 +410,4 @@ async def on_shutdown():
 app.include_router(investments.router) 
 app.include_router(referrals.router)  
 app.include_router(transactions_router)
+app.include_router(games.router)

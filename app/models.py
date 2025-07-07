@@ -21,6 +21,9 @@ class User(Base):
     total_withdrawn = Column(Numeric(18, 2), default=0.00)
     password_hash = Column(String(255), nullable=True) # Для хеша пароля
 
+    # --- Добавлено это поле ---
+    last_daily_bonus_claim = Column(DateTime(timezone=True), nullable=True)
+
     # Определяем взаимосвязи с другими моделями
     investments = relationship("Investment", back_populates="owner")
     transactions = relationship("Transaction", back_populates="user_rel")
@@ -29,7 +32,6 @@ class User(Base):
 
     def __repr__(self):
         return f"<User(id={self.id}, username='{self.username}')>"
-
 # --- Таблица: `investment_packages`
 class InvestmentPackage(Base):
     __tablename__ = "investment_packages"
