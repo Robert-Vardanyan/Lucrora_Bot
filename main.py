@@ -75,6 +75,9 @@ webapp_button = InlineKeyboardMarkup(inline_keyboard=[
 # === Обработчик /start ===
 @dp.message(Command("start"))
 async def start_handler(message: Message):
+
+    print(f"Получено сообщение от пользователя: {message.from_user.id} - start")
+    
     await message.answer(
         "👋 Привет! Нажми кнопку ниже, чтобы открыть Mini App:",
         reply_markup=webapp_button
