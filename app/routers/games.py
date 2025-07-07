@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import json
 import random
 from urllib.parse import parse_qsl
+from decimal import Decimal # ***ВАЖНО: Добавлен этот импорт***
 
 from app.database import get_async_session
 from app.models import User # Убедись, что импортируешь модель User
@@ -65,21 +66,24 @@ async def get_daily_bonus(request: Request, db: AsyncSession = Depends(get_async
 
     # Проверка на cooldown (24 часа)
     if user.last_daily_bonus_claim:
+        # Используем total_seconds() для точного сравнения 24 часов
         time_since_last_claim = datetime.utcnow() - user.last_daily_bonus_claim
         if time_since_last_claim < timedelta(days=1):
             remaining_time = timedelta(days=1) - time_since_last_claim
-            hours, remainder = divmod(remaining_time.seconds, 3600)
+            hours, remainder = divmod(int(remaining_time.total_seconds()), 3600) # Использование int(total_seconds())
             minutes, seconds = divmod(remainder, 60)
             return {
                 "ok": False,
                 "message": f"Вы уже получили ежедневный бонус. Повторите попытку через {hours} ч. {minutes} мин.",
-                "bonus_balance": float(user.bonus_balance)
+                "bonus_balance": float(user.bonus_balance),
+                "last_daily_bonus_claim": user.last_daily_bonus_claim.isoformat() if user.last_daily_bonus_claim else None # Отправляем время
             }
 
     # Начисление случайного бонуса от 0.5 до 5.0
-    bonus_amount = round(random.uniform(0.5, 5.0), 2)
-    user.bonus_balance += bonus_amount
-    user.last_daily_bonus_claim = datetime.utcnow()
+    # ***ВАЖНО: Преобразование float в Decimal через str() для точности***
+    bonus_amount = Decimal(str(round(random.uniform(0.5, 5.0), 2)))
+    user.bonus_balance += bonus_amount # Теперь обе переменные типа Decimal
+    user.last_daily_bonus_claim = datetime.utcnow() # Обновляем время получения
 
     try:
         await db.commit()
@@ -87,7 +91,8 @@ async def get_daily_bonus(request: Request, db: AsyncSession = Depends(get_async
         return {
             "ok": True,
             "message": f"Поздравляем! Вы получили {bonus_amount} ₤s ежедневного бонуса!",
-            "bonus_balance": float(user.bonus_balance)
+            "bonus_balance": float(user.bonus_balance), # При отправке в JSON конвертируем обратно во float
+            "last_daily_bonus_claim": user.last_daily_bonus_claim.isoformat() if user.last_daily_bonus_claim else None
         }
     except Exception as e:
         await db.rollback()
@@ -109,48 +114,46 @@ async def play_game(request: Request, db: AsyncSession = Depends(get_async_sessi
     user = await get_current_user_from_init_data(init_data, db)
 
     # Определяем стоимость игры
+    # ***ВАЖНО: Стоимости игр теперь определены как Decimal***
     game_costs = {
-        "wheel_of_fortune": 1.00,
-        "higher_lower": 0.50
+        "wheel_of_fortune": Decimal("1.00"),
+        "higher_lower": Decimal("0.50")
     }
 
     cost = game_costs.get(game_id)
     if cost is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неизвестный ID игры.")
 
+    # Сравнение Decimal с Decimal
     if user.bonus_balance < cost:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Недостаточно средств на бонусном балансе.")
 
-    user.bonus_balance -= cost
+    user.bonus_balance -= cost # Вычитание Decimal из Decimal
 
     # Здесь будет логика конкретной игры
-    # Для примера, просто списываем и сообщаем о начале игры
     game_result_message = ""
     if game_id == "wheel_of_fortune":
-        # Пример: имитация выигрыша или проигрыша
         win_chance = random.random() # от 0 до 1
         if win_chance < 0.6: # 60% шанс проиграть
             game_result_message = "К сожалению, вы ничего не выиграли."
         else:
-            win_amount = round(random.uniform(cost * 1.5, cost * 5), 2) # Выигрыш от 1.5 до 5 раз от ставки
-            user.bonus_balance += win_amount
+            # ***ВАЖНО: Преобразование win_amount в Decimal***
+            # Для random.uniform нужно float, поэтому преобразуем Decimal cost в float
+            win_amount = Decimal(str(round(random.uniform(float(cost) * 1.5, float(cost) * 5), 2)))
+            user.bonus_balance += win_amount # Добавление Decimal к Decimal
             game_result_message = f"Поздравляем! Вы выиграли {win_amount} ₤s!"
             
     elif game_id == "higher_lower":
-        # Логика для "Больше/Меньше" - пока заглушка, нужно реализовать на фронте и бэкенде
         game_result_message = "Игра 'Больше/Меньше' пока не полностью реализована."
-        # Можно добавить логику, где клиент отправляет свой выбор, а сервер генерирует число и определяет выигрыш
     
-    # ... Добавь логику для других игр здесь ...
-
     try:
         await db.commit()
         await db.refresh(user)
         return {
             "ok": True,
             "message": f"Вы сыграли в {game_id.replace('_', ' ')}. {game_result_message}",
-            "bonus_balance": float(user.bonus_balance),
-            "game_outcome": game_result_message # Добавим исход игры
+            "bonus_balance": float(user.bonus_balance), # При отправке в JSON конвертируем обратно во float
+            "game_outcome": game_result_message
         }
     except Exception as e:
         await db.rollback()
