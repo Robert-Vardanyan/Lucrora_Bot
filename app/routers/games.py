@@ -2,11 +2,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone # Добавлен 'timezone' для работы с часовыми поясами
 import json
 import random
 from urllib.parse import parse_qsl
-from decimal import Decimal # ***ВАЖНО: Добавлен этот импорт***
+from decimal import Decimal # Добавлен 'Decimal' для точных финансовых расчетов
 
 from app.database import get_async_session
 from app.models import User # Убедись, что импортируешь модель User
@@ -64,26 +64,34 @@ async def get_daily_bonus(request: Request, db: AsyncSession = Depends(get_async
 
     user = await get_current_user_from_init_data(init_data, db)
 
+    # Получаем текущее время в UTC, явно указывая часовой пояс
+    now_utc = datetime.now(timezone.utc) 
+
     # Проверка на cooldown (24 часа)
     if user.last_daily_bonus_claim:
-        # Используем total_seconds() для точного сравнения 24 часов
-        time_since_last_claim = datetime.utcnow() - user.last_daily_bonus_claim
+        # Убедимся, что user.last_daily_bonus_claim также переведен в UTC для корректного сравнения
+        # (обычно SQLAlchemy с DateTime(timezone=True) уже делает его aware, но .astimezone(timezone.utc) для надежности)
+        last_claim_aware_utc = user.last_daily_bonus_claim.astimezone(timezone.utc)
+        
+        # Теперь оба datetime объекта являются aware и находятся в одной и той же временной зоне (UTC)
+        time_since_last_claim = now_utc - last_claim_aware_utc
+
         if time_since_last_claim < timedelta(days=1):
             remaining_time = timedelta(days=1) - time_since_last_claim
-            hours, remainder = divmod(int(remaining_time.total_seconds()), 3600) # Использование int(total_seconds())
+            hours, remainder = divmod(int(remaining_time.total_seconds()), 3600) # Используем total_seconds() для точности
             minutes, seconds = divmod(remainder, 60)
             return {
                 "ok": False,
                 "message": f"Вы уже получили ежедневный бонус. Повторите попытку через {hours} ч. {minutes} мин.",
-                "bonus_balance": float(user.bonus_balance),
+                "bonus_balance": float(user.bonus_balance), # Конвертируем Decimal в float для фронтенда
                 "last_daily_bonus_claim": user.last_daily_bonus_claim.isoformat() if user.last_daily_bonus_claim else None # Отправляем время
             }
 
     # Начисление случайного бонуса от 0.5 до 5.0
-    # ***ВАЖНО: Преобразование float в Decimal через str() для точности***
+    # Преобразуем float в Decimal через строку для обеспечения точности
     bonus_amount = Decimal(str(round(random.uniform(0.5, 5.0), 2)))
-    user.bonus_balance += bonus_amount # Теперь обе переменные типа Decimal
-    user.last_daily_bonus_claim = datetime.utcnow() # Обновляем время получения
+    user.bonus_balance += bonus_amount # Теперь оба операнда (Decimal) одного типа
+    user.last_daily_bonus_claim = now_utc # Сохраняем aware UTC datetime
 
     try:
         await db.commit()
@@ -91,7 +99,7 @@ async def get_daily_bonus(request: Request, db: AsyncSession = Depends(get_async
         return {
             "ok": True,
             "message": f"Поздравляем! Вы получили {bonus_amount} ₤s ежедневного бонуса!",
-            "bonus_balance": float(user.bonus_balance), # При отправке в JSON конвертируем обратно во float
+            "bonus_balance": float(user.bonus_balance), # Конвертируем Decimal в float для фронтенда
             "last_daily_bonus_claim": user.last_daily_bonus_claim.isoformat() if user.last_daily_bonus_claim else None
         }
     except Exception as e:
@@ -114,7 +122,7 @@ async def play_game(request: Request, db: AsyncSession = Depends(get_async_sessi
     user = await get_current_user_from_init_data(init_data, db)
 
     # Определяем стоимость игры
-    # ***ВАЖНО: Стоимости игр теперь определены как Decimal***
+    # Стоимости игр теперь определены как Decimal для точных расчетов
     game_costs = {
         "wheel_of_fortune": Decimal("1.00"),
         "higher_lower": Decimal("0.50")
@@ -137,8 +145,8 @@ async def play_game(request: Request, db: AsyncSession = Depends(get_async_sessi
         if win_chance < 0.6: # 60% шанс проиграть
             game_result_message = "К сожалению, вы ничего не выиграли."
         else:
-            # ***ВАЖНО: Преобразование win_amount в Decimal***
-            # Для random.uniform нужно float, поэтому преобразуем Decimal cost в float
+            # Преобразуем win_amount в Decimal для точных расчетов
+            # Для random.uniform() нужны float, поэтому временно конвертируем cost в float
             win_amount = Decimal(str(round(random.uniform(float(cost) * 1.5, float(cost) * 5), 2)))
             user.bonus_balance += win_amount # Добавление Decimal к Decimal
             game_result_message = f"Поздравляем! Вы выиграли {win_amount} ₤s!"
@@ -152,7 +160,7 @@ async def play_game(request: Request, db: AsyncSession = Depends(get_async_sessi
         return {
             "ok": True,
             "message": f"Вы сыграли в {game_id.replace('_', ' ')}. {game_result_message}",
-            "bonus_balance": float(user.bonus_balance), # При отправке в JSON конвертируем обратно во float
+            "bonus_balance": float(user.bonus_balance), # Конвертируем Decimal в float для фронтенда
             "game_outcome": game_result_message
         }
     except Exception as e:
