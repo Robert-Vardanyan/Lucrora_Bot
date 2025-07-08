@@ -38,35 +38,25 @@ router = APIRouter()
 
 
 # --- Зависимость для получения Telegram User ID из initData ---
-async def get_telegram_user_id(request: Request) -> int:
-    print(f"Received request for get_telegram_user_id: {request.method} {request.url}")
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный формат JSON запроса.")
-
-    init_data = body.get("initData") # Изменено на "initData", чтобы соответствовать фронтенду
-    print(f"initData received: {init_data}")
-
+async def get_telegram_user_id_from_init_data(init_data: str) -> int:
+    print(f"DEBUG: Validating initData. Length: {len(init_data)}")
     if not init_data or not check_webapp_signature(init_data, BOT_TOKEN):
-        print("Ошибка: initData не найден или подпись неверна.")
+        print("DEBUG: initData validation failed.")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Неверные или отсутствующие Telegram initData.")
 
     user_data_str = dict(parse_qsl(init_data)).get('user')
-    print(f"Parsed user data from initData: {user_data_str}")
     if not user_data_str:
-        print("Ошибка: user_data_str не найден в initData.")
+        print("DEBUG: User data not found in initData.")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Данные пользователя не найдены в initData.")
 
     try:
         user_info = json.loads(user_data_str)
         telegram_id = int(user_info.get('id'))
-        print(f"Extracted Telegram user ID: {telegram_id}")
+        print(f"DEBUG: Successfully parsed Telegram ID: {telegram_id}")
         return telegram_id
-    except (json.JSONDecodeError, ValueError):
-        print(f"Ошибка при разборе user_data_str: {user_data_str}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверный формат данных пользователя или Telegram ID в initData.")
-
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"DEBUG: Error parsing user data from initData: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Неверный формат данных пользователя или Telegram ID в initData: {e}")
 
 # --- Pydantic модели для валидации данных ---
 
@@ -121,8 +111,11 @@ async def create_stars_invoice(
           f"initData_len={len(request_body.initData)}")
     
     # initData уже валидируется в get_telegram_user_id, но нам нужен сам объект пользователя
-    user_id = await get_telegram_user_id(Request(scope={"type": "http", "body": request_body.model_dump_json().encode()}))
+    print(f"DEBUG: Validating initData length: {len(request_body.initData)}")
+    user_id = await get_telegram_user_id_from_init_data(request_body.initData)
+    print(f"DEBUG: User ID from initData: {user_id}")
     user = await db.get(User, user_id)
+    print(f"DEBUG: Retrieved user from DB: {user}") 
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Пользователь не найден.")
 
