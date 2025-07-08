@@ -21,10 +21,8 @@ class User(Base):
     total_withdrawn = Column(Numeric(18, 2), default=0.00)
     password_hash = Column(String(255), nullable=True) # Для хеша пароля
 
-    # --- Добавлено это поле ---
     last_daily_bonus_claim = Column(DateTime(timezone=True), nullable=True)
 
-    # Определяем взаимосвязи с другими моделями
     investments = relationship("Investment", back_populates="owner")
     transactions = relationship("Transaction", back_populates="user_rel")
     referred_by = relationship("Referral", foreign_keys='Referral.referred_id', back_populates="referred_user")
@@ -47,7 +45,6 @@ class InvestmentPackage(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Обратная связь с Investment, если потребуется получить все покупки конкретного пакета
     investments_made = relationship("Investment", back_populates="package_details")
 
     def __repr__(self):
@@ -60,17 +57,19 @@ class Investment(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
-    # Изменено: теперь ссылается на InvestmentPackage
     package_id = Column(Integer, ForeignKey("investment_packages.id"), nullable=False) 
     amount_invested = Column(Numeric(18, 2), nullable=False)
     start_date = Column(DateTime(timezone=True), server_default=func.now())
     end_date = Column(DateTime(timezone=True), nullable=True) # Будет рассчитываться
     current_earned = Column(Numeric(18, 2), default=0.00)
     is_active = Column(Boolean, default=True) # Флаг активности конкретной инвестиции
+    
+    # НОВОЕ ПОЛЕ: Для хранения ID платежа Telegram Stars
+    stars_payment_charge_id = Column(String(255), unique=True, nullable=True, index=True) 
+    # Это поле будет содержать 'telegram_payment_charge_id' из успешного платежа
+    # Делаем его unique=True, чтобы гарантировать, что один и тот же платеж не будет обработан дважды.
 
-    # Определяем взаимосвязи с моделями User и InvestmentPackage
     owner = relationship("User", back_populates="investments")
-    # Добавлено: связь с деталями пакета
     package_details = relationship("InvestmentPackage", back_populates="investments_made") 
 
     def __repr__(self):
@@ -83,15 +82,14 @@ class Transaction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
-    type = Column(String(50), nullable=False) # 'deposit', 'withdrawal', 'earning', 'game_win', 'game_loss', 'referral_bonus', 'conversion'
+    type = Column(String(50), nullable=False) 
     amount = Column(Numeric(18, 2), nullable=False)
-    currency = Column(String(10), nullable=False) # 'LCR', 'USD', 'RUB'
+    currency = Column(String(10), nullable=False) 
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
-    status = Column(String(50), default='completed') # 'pending', 'completed', 'failed', 'processing'
+    status = Column(String(50), default='completed') 
     description = Column(Text, nullable=True)
-    txid = Column(String(255), nullable=True) # Для крипто-транзакций
+    txid = Column(String(255), nullable=True) 
 
-    # Определяем взаимосвязь с моделью User
     user_rel = relationship("User", back_populates="transactions")
 
     def __repr__(self):
@@ -109,7 +107,6 @@ class Referral(Base):
     bonus_earned = Column(Numeric(18, 2), default=0.00)
     join_date = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Определяем взаимосвязи с моделью User
     referrer_user = relationship("User", foreign_keys=[referrer_id], back_populates="referrals_made")
     referred_user = relationship("User", foreign_keys=[referred_id], back_populates="referred_by")
 
