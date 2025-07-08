@@ -8,7 +8,7 @@ from operator import itemgetter
 from datetime import datetime, timedelta, timezone # Добавляем timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from regex import P
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from pydantic import BaseModel
