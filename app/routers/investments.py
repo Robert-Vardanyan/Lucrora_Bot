@@ -8,6 +8,7 @@ from operator import itemgetter
 from datetime import datetime, timedelta, timezone # Добавляем timezone
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -130,69 +131,56 @@ async def create_stars_invoice_endpoint(
     print(f"DEBUG: Retrieved package from DB: {investment_package}")
 
     # 4. Валидация стоимости пакета, пришедшей с фронтенда
-    # Преобразуем Decimal(100.00) в int 100 для сравнения, если min_amount - целое число
-    # Или лучше сравним как Decimal, квантуя их
     if investment_package.min_amount.quantize(Decimal('0.01')) != request_body.package_cost_lcr.quantize(Decimal('0.01')):
         print(f"DEBUG: Frontend cost: {request_body.package_cost_lcr}, Backend cost: {investment_package.min_amount}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Неверная стоимость пакета. Пожалуйста, обновите страницу.")
 
     # 5. Конвертация LCR в Stars (пример: 1 LCR = 10 Stars)
-    # Используйте Decimal для точных расчетов
-    LCR_TO_STARS_RATE = Decimal('10') # Пусть 1 LCR = 10 Stars
-    stars_amount = int((request_body.package_cost_lcr * LCR_TO_STARS_RATE).quantize(Decimal('1'))) # Округляем до целых Stars
+    LCR_TO_STARS_RATE = Decimal('10')
+    stars_amount = int((request_body.package_cost_lcr * LCR_TO_STARS_RATE).quantize(Decimal('1')))
     
     if stars_amount <= 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Количество Stars для оплаты должно быть положительным.")
 
     # 6. Формирование invoice_payload
-    # Этот payload будет возвращен Telegram после успешной оплаты
-    # Формат: "investpurchase:<user_id>:<package_id>:<timestamp>"
-    timestamp = int(func.now().timestamp())
+    # ИСПРАВЛЕНИЕ ЗДЕСЬ: Используем datetime.datetime.now() для получения текущего времени и .timestamp()
+    timestamp = int(datetime.datetime.now().timestamp()) # <--- ИСПРАВЛЕНИЕ
     invoice_payload = f"investpurchase:{telegram_user_id}:{request_body.package_id}:{timestamp}"
     print(f"DEBUG: Generated invoice_payload: {invoice_payload}")
 
     # 7. Генерация ссылки на инвойс через Telegram Bot API
-    # Используйте ваш BOT_TOKEN (TOKEN_PAYMENT_PROVIDER_TEST_STARS или боевой)
-    # NOTE: Используйте TEST токен для теста, а боевой для продакшена. 
-    # В данном случае, это ваш "Telegram Payment Provider Token"
-    payment_provider_token = BOT_TOKEN # Ваш тестовый или боевой токен провайдера
+    payment_provider_token = BOT_TOKEN 
 
     if not payment_provider_token:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Telegram Payment Provider Token не настроен.")
 
     telegram_api_url = f"https://api.telegram.org/bot{payment_provider_token}/createInvoiceLink"
     
-    # Подготовка данных для запроса createInvoiceLink
-    # Убедитесь, что 'payload' совпадает с вашей `invoice_payload`
-    # 'title' и 'description' будут отображаться пользователю в окне оплаты
-    # 'price' должен быть в Stars
     invoice_params = {
         "title": f"Покупка '{investment_package.name}'",
         "description": f"Инвестиционный пакет {investment_package.name} за {request_body.package_cost_lcr} LCR",
         "payload": invoice_payload,
-        "provider_token": payment_provider_token, # Это ваш Telegram Payment Provider Token
-        "currency": "XTR", # Всегда XTR для Telegram Stars
+        "provider_token": payment_provider_token,
+        "currency": "XTR",
         "prices": json.dumps([{"label": f"{request_body.package_cost_lcr} LCR ({stars_amount} Stars)", "amount": stars_amount}]),
-        "max_tip_amount": 0, # Опционально, если не хотите чаевые
-        "suggested_tip_amounts": [], # Опционально
-        "start_parameter": f"invest_{request_body.package_id}", # Используется для deeplink, если пользователь запустит бота по ссылке инвойса
+        "max_tip_amount": 0,
+        "suggested_tip_amounts": [],
+        "start_parameter": f"invest_{request_body.package_id}",
         "photo_url": "https://lucrora-bot.onrender.com/static/icon.png", # Замените на реальную ссылку к картинке вашего пакета
         "photo_width": 500,
         "photo_height": 500,
-        "need_name": False, # Опционально, если нужны доп. данные
+        "need_name": False,
         "need_phone_number": False,
         "need_email": False,
         "send_email_to_provider": False,
         "send_phone_number_to_provider": False,
-        "is_flexible": False # Для Stars всегда False
+        "is_flexible": False
     }
 
     async with httpx.AsyncClient() as client:
         try:
-            # Telegram API ожидает Content-Type: application/json для большинства методов, но для форм можно и multipart/form-data
-            # Однако, для `createInvoiceLink` обычно JSON POST body работает
             tg_response = await client.post(telegram_api_url, json=invoice_params)
-            tg_response.raise_for_status() # Выбросит исключение для 4xx/5xx ответов
+            tg_response.raise_for_status()
 
             tg_data = tg_response.json()
             print(f"DEBUG: Telegram API createInvoiceLink response: {tg_data}")
@@ -224,7 +212,8 @@ async def create_stars_invoice_endpoint(
         except Exception as e:
             print(f"ERROR: Unexpected error in create_stars_invoice_endpoint: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Произошла непредвиденная ошибка: {e}")
-
+        
+        
 # --- НОВЫЙ ЭНДПОИНТ: Обработка колбэков Telegram Payments (Webhook) ---
 # Этот эндпоинт будет вызываться Telegram после успешной оплаты Stars
 @router.post("/telegram_payment_webhook")
