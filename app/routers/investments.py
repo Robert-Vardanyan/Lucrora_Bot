@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from app.database import get_async_session
 from app.models import InvestmentPackage, User, Investment, Transaction # Исправлено: Investment вместо UserInvestment
+from app.utils import check_webapp_signature
 
 import os
 from dotenv import load_dotenv
@@ -34,24 +35,6 @@ if not TELEGRAM_PAYMENT_PROVIDER_TOKEN:
 
 router = APIRouter()
 
-# --- Вспомогательная функция для проверки initData (перенесена из main.py) ---
-def check_webapp_signature(init_data: str, token: str) -> bool:
-    try:
-        parsed_data = dict(parse_qsl(init_data))
-    except ValueError:
-        return False
-    if "hash" not in parsed_data:
-        return False
-
-    hash_ = parsed_data.pop('hash')
-    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed_data.items(), key=itemgetter(0)))
-    secret_key = hmac.new(
-        key=b"WebAppData", msg=token.encode(), digestmod=hashlib.sha256
-    )
-    calculated_hash = hmac.new(
-        key=secret_key.digest(), msg=data_check_string.encode(), digestmod=hashlib.sha256
-    ).hexdigest()
-    return calculated_hash == hash_
 
 # --- Зависимость для получения Telegram User ID из initData ---
 async def get_telegram_user_id(request: Request) -> int:
@@ -124,6 +107,8 @@ async def create_stars_invoice(
     Создает инвойс для покупки инвестиционного пакета через Telegram Stars.
     Возвращает payload для tg.openInvoice().
     """
+    print(f"Received request_body: {request_body.model_dump_json(indent=2)}")
+
     # initData уже валидируется в get_telegram_user_id, но нам нужен сам объект пользователя
     user_id = await get_telegram_user_id(Request(scope={"type": "http", "body": request_body.model_dump_json().encode()}))
     user = await db.get(User, user_id)
