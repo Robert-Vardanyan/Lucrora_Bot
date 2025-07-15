@@ -1,18 +1,35 @@
 # app/models.py
 
-from sqlalchemy import Column, BigInteger, String, Numeric, DateTime, Boolean, Text, Integer, ForeignKey
+from sqlalchemy import Column, BigInteger, String, Numeric, DateTime, Boolean, Text, Integer, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from .database import Base # Импортируем Base из нашего database.py
 
 # --- Таблица: users ---
+# Перечисление для статуса аккаунта пользователя
+class UserAccountStatus(enum.Enum):
+    active = "active"           # Активный пользователь, может пользоваться системой
+    logged_out = "logged_out"   # Пользователь явно вышел из системы (полезно для бэкенда принудительного логаута)
+    banned = "banned"           # Заблокированный пользователь
+    inactive = "inactive"       # Неактивный пользователь (например, долго не заходил)
+
+# Перечисление для роли пользователя
+class UserRole(enum.Enum):
+    user = "user"               # Обычный пользователь
+    premium = "premium"         # Премиум-пользователь (если есть уровни)
+    vip = "vip"                 # VIP-пользователь
+    moderator = "moderator"     # Модератор
+    admin = "admin"             # Администратор (высшие привилегии)
+
+# --- ОБНОВЛЕННАЯ МОДЕЛЬ USER ---
+
 class User(Base):
     __tablename__ = "users"
 
     id = Column(BigInteger, primary_key=True, index=True) # Telegram User ID
-    username = Column(String(255), unique=True, nullable=False, index=True)
-    first_name = Column(String(255), nullable=True)
-    last_name = Column(String(255), nullable=True)
+    username = Column(String(255), unique=True, nullable=False, index=True) # Уникальное имя пользователя Telegram
+    first_name = Column(String(255), nullable=True) # Имя пользователя 
+    last_name = Column(String(255), nullable=True) # Фамилия пользователя 
     registration_date = Column(DateTime(timezone=True), server_default=func.now())
     main_balance = Column(Numeric(18, 2), default=0.00)
     bonus_balance = Column(Numeric(18, 2), default=0.00)
@@ -22,14 +39,23 @@ class User(Base):
     password_hash = Column(String(255), nullable=True) # Для хеша пароля
 
     last_daily_bonus_claim = Column(DateTime(timezone=True), nullable=True)
+    last_login_date = Column(DateTime(timezone=True), default=func.now())
 
+    phone_number = Column(String(20), unique=True, nullable=True, index=True) 
+    email = Column(String(255), unique=True, nullable=True, index=True)    
+
+    status = Column(Enum(UserAccountStatus), default=UserAccountStatus.active, nullable=False)
+    role = Column(Enum(UserRole), default=UserRole.user, nullable=False)
+
+    # --- СВЯЗИ ---
     investments = relationship("Investment", back_populates="owner")
     transactions = relationship("Transaction", back_populates="user_rel")
     referred_by = relationship("Referral", foreign_keys='Referral.referred_id', back_populates="referred_user")
     referrals_made = relationship("Referral", foreign_keys='Referral.referrer_id', back_populates="referrer_user")
 
     def __repr__(self):
-        return f"<User(id={self.id}, username='{self.username}')>"
+        return f"<User(id={self.id}, status='{self.status.value}', role='{self.role.value}')>"
+
 # --- Таблица: `investment_packages`
 class InvestmentPackage(Base):
     __tablename__ = "investment_packages"

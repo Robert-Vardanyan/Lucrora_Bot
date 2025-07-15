@@ -1,11 +1,13 @@
 # Assuming this is your main FastAPI file
 import asyncio
+import email
 import hmac
 import hashlib
 import os
 from urllib.parse import parse_qsl
 from operator import itemgetter
 import json
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
@@ -14,8 +16,10 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.methods import SetWebhook, DeleteWebhook # Импортируем методы для вебхуков
 
-from fastapi import FastAPI, Request, HTTPException, Depends, Query # Импортируем Query для параметров GET запроса
+from fastapi import FastAPI, Request, Response, HTTPException, Depends, Query # Импортируем Query для параметров GET запроса
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -25,7 +29,7 @@ from passlib.context import CryptContext
 
 # --- Импортируем наши ORM-модели и утилиты БД ---
 from app.database import engine, create_db_tables, drop_db_tables, get_async_session
-from app.models import User, Investment, Transaction, Referral # Ensure User is imported
+from app.models import User, UserAccountStatus, UserRole, Investment, Transaction, Referral # Ensure User is imported
 
 # --- Импортируем новый роутер для инвестиций ---
 from app.routers import investments #
@@ -49,12 +53,21 @@ WEBAPP_URL = os.getenv("WEBAPP_URL") # URL вашего Mini App
 BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")
 DROP_DB_ON_STARTUP = os.getenv("DROP_DB_ON_STARTUP", "False").lower() == "true"
 
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+REFRESH_TOKEN_SECRET_KEY = os.getenv("REFRESH_TOKEN_SECRET_KEY") 
+ALGORITHM = "HS256"
 
-# === Инициализация FastAPI ===
-app = FastAPI()
+# === ВРЕМЯ ЖИЗНИ ТОКЕНОВ ===
+ACCESS_TOKEN_EXPIRE_MINUTES = 120 # Например, 30 минут
+REFRESH_TOKEN_EXPIRE_DAYS = 14   # Например, 7 дней для "Remember Me"
 
 # === Инициализация контекста для хеширования паролей ===
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+
+# === Инициализация FastAPI ===
+app = FastAPI()
 
 # CORS для Mini App
 app.add_middleware(
@@ -64,6 +77,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ JWT (ОБНОВЛЕНО) ===
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM) # Используем JWT_SECRET_KEY
+    return encoded_jwt
+
+def create_refresh_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, REFRESH_TOKEN_SECRET_KEY, algorithm=ALGORITHM) # Используем REFRESH_TOKEN_SECRET_KEY
+    return encoded_jwt
+
+def verify_access_token(token: str):
+    try:
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid Access Token: User ID missing")
+        return int(user_id)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid Access Token: Signature or expiration invalid")
+
+def verify_refresh_token(token: str):
+    try:
+        payload = jwt.decode(token, REFRESH_TOKEN_SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid Refresh Token: User ID missing")
+        return int(user_id)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid Refresh Token: Signature or expiration invalid")
+
+# --- Зависимость для получения токена из заголовка Authorization ---
+security = HTTPBearer()
+
+
+# ================================================
+# ================================================
 
 # === Инициализация Telegram-бота ===
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -86,83 +143,148 @@ async def start_handler(message: Message):
     )
     await message.delete() # Удаление сообщения может быть нежелательно для пользователя
 
-# === Проверка существования пользователя по Telegram ID ===
-@app.get("/check_user") # Используем GET запрос, так как мы только получаем информацию
-async def check_user_exists(user_id: int = Query(..., description="Telegram User ID"), db: AsyncSession = Depends(get_async_session)):
-    """
-    Проверяет, существует ли пользователь в базе данных по его Telegram ID.
-    Возвращает {"exists": true} если пользователь найден, иначе {"exists": false}.
-    """
-    print(f"Получен запрос на проверку пользователя с Telegram ID: {user_id}")
+
+# ================================================
+# ================================================
+
+# === АУТЕНТИФИКАЦИЯ / РЕГИСТРАЦИЯ / СЕССИИ ===
+
+@app.post("/api/register")
+async def api_register(request: Request, db: AsyncSession = Depends(get_async_session)):
     try:
-        user = await db.get(User, user_id)
-        if user:
-            print(f"Пользователь с ID {user_id} найден. isRegistered: True")
-            return {"exists": True}
-        else:
-            print(f"Пользователь с ID {user_id} не найден. isRegistered: False")
-            return {"exists": False}
-    except Exception as e:
-        print(f"Ошибка при проверке пользователя в БД: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error during user check.")
+        data = await request.json()
+        init_data = data.get("initData")
+        username = data.get("username")
+        password = data.get("password")
+        remember_me = data.get("rememberMe", False) # НОВОЕ: флаг "Remember Me"
+        phone_number = data.get("phone_number") 
+        email = data.get("email")               
 
+        if not init_data or not username or not password:
+            raise HTTPException(status_code=400, detail="Missing required data.")
 
-# === Эндпоинт инициализации Mini App ===
-@app.post("/api/init")
-async def api_init(request: Request, db: AsyncSession = Depends(get_async_session)):
-    # print("Получен запрос на инициализацию Mini App.")
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
+        if not check_webapp_signature(init_data, BOT_TOKEN):
+            raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
 
-    # print(f"Получено тело запроса: {body}")
-    init_data = body.get("initData")
-    # print(f"Полученные данные инициализации: {init_data}")
+        user_data_tg_str = dict(parse_qsl(init_data)).get('user')
+        if not user_data_tg_str:
+            raise HTTPException(status_code=400, detail="Telegram user data not found in initData")
 
-    # Проверяем наличие init_data
-    if not init_data:
-        raise HTTPException(status_code=403, detail="Missing Telegram initData")
+        user_info_tg = json.loads(user_data_tg_str)
+        telegram_id = int(user_info_tg.get('id'))
+        first_name = user_info_tg.get('first_name')
+        last_name = user_info_tg.get('last_name')
 
-    # Теперь, когда мы уверены, что init_data существует, проверяем её подпись
-    if not check_webapp_signature(init_data, BOT_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
+        existing_user = await db.execute(select(User).filter_by(id=telegram_id))
+        if existing_user.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="User already registered.")
 
+        # Хэширование пароля
+        hashed_password = pwd_context.hash(password)
 
-    # print("Проверка подписи initData (если она была) прошла успешно.")
-    user_data_str = dict(parse_qsl(init_data)).get('user')
-    # print(f"Извлеченные данные пользователя: {user_data_str}")
+        new_user = User(
+            id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            password_hash=hashed_password,
+            status=UserAccountStatus.active, # Дефолтный статус активный
+            role=UserRole.user, # Дефолтная роль пользователь
+            phone_number=phone_number,
+            email=email
+        )
+        db.add(new_user)
+        await db.commit()
+        await db.refresh(new_user)
 
-    if not user_data_str:
-        raise HTTPException(status_code=400, detail="User data not found in initData")
+        # === ГЕНЕРАЦИЯ ОБОИХ ТОКЕНОВ ===
+        access_token = create_access_token(data={"sub": str(new_user.id)})
+        refresh_token = create_refresh_token(data={"sub": str(new_user.id)})
 
-    try:
-        user_info = json.loads(user_data_str)
-        telegram_id = int(user_info.get('id'))
-        first_name = user_info.get('first_name', '')
-        last_name = user_info.get('last_name', '')
-        username_tg = user_info.get('username', '')
-    except (json.JSONDecodeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
+        print(f"Пользователь {username} (ID: {telegram_id}) успешно зарегистрирован. Выданы токены.")
 
-    # print(f"Пользователь: {first_name} {last_name} (ID: {telegram_id}, Username: {username_tg})")
-    # print("Проверяю наличие пользователя в базе данных...")
-    # print(f"Ищем пользователя с Telegram ID: {type(telegram_id)} - {telegram_id} ")
-    user = await db.get(User, telegram_id)
-    # print(f"Найден пользователь: {type(user)} {user}")
-
-    if user:
-        # print(f"Пользователь {user.username} (ID: {user.id}) уже зарегистрирован.")
-        # # Возвращаем данные пользователя в формате, ожидаемом Mini App
-        # print(f"Возвращаем данные пользователя: {user}")
-        # print(f"Баланс пользователя: main_balance={user.main_balance}, bonus_balance={user.bonus_balance}, lucrum_balance={user.lucrum_balance}")
-        # print(f"Инвестировано: {user.total_invested}, Выведено: {user.total_withdrawn}")
-        # print(f"Имя пользователя: {user.username}, Имя: {user.first_name}")
-        # print(f"Фамилия пользователя: {user.last_name}")
-        # print(f"Дата регистрации пользователя: {user.registration_date}")
         return {
             "ok": True,
+            "message": "Registration successful!",
+            "user_id": str(telegram_id),
+            "username": username,
+            "access_token": access_token,
+            "refresh_token": refresh_token, # НОВОЕ: Отправляем Refresh Token
+            "token_type": "bearer",
             "isRegistered": True,
+            "main_balance": float(new_user.main_balance),
+            "bonus_balance": float(new_user.bonus_balance),
+            "lucrum_balance": float(new_user.lucrum_balance),
+            "total_invested": float(new_user.total_invested),
+            "total_withdrawn": float(new_user.total_withdrawn),
+            "first_name": new_user.first_name,
+            "last_name": new_user.last_name,
+            "status": new_user.status.value,
+            "role": new_user.role.value,
+            "email": new_user.email,
+            "phone_number": new_user.phone_number
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error during registration: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+# ================================================
+
+@app.post("/api/login")
+async def api_login(request: Request, db: AsyncSession = Depends(get_async_session)):
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+        email = data.get("email")
+        password = data.get("password")
+        remember_me = data.get("rememberMe", False) # НОВОЕ: флаг "Remember Me"
+
+        if not init_data or not email or not password:
+            raise HTTPException(status_code=400, detail="Missing required data.")
+
+        if not check_webapp_signature(init_data, BOT_TOKEN):
+            raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
+
+        user_data_tg_str = dict(parse_qsl(init_data)).get('user')
+        if not user_data_tg_str:
+            raise HTTPException(status_code=400, detail="Telegram user data not found in initData")
+
+        user_info_tg = json.loads(user_data_tg_str)
+        telegram_id_from_tg = int(user_info_tg.get('id'))
+
+        user_query = await db.execute(select(User).filter_by(email=email))
+        user = user_query.scalar_one_or_none()
+
+        if not user or not pwd_context.verify(password, user.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid username or password.")
+
+        # Проверяем, что Telegram ID из initData совпадает с ID пользователя в БД
+        if user.id != telegram_id_from_tg:
+            print(f"Предупреждение: Пользователь {email} (ID: {user.id}) пытается войти с другим Telegram ID ({telegram_id_from_tg}).")
+            # Можно запретить вход или отправить уведомление. Для простоты сейчас запретим.
+            raise HTTPException(status_code=403, detail="Telegram ID mismatch. Please login from the correct Telegram account.")
+
+        # Обновляем статус и дату последнего входа
+        user.last_login_date = datetime.now(timezone.utc)
+        user.status = UserAccountStatus.active
+        await db.commit()
+        await db.refresh(user)
+
+        # === ГЕНЕРАЦИЯ ОБОИХ ТОКЕНОВ ===
+        access_token = create_access_token(data={"sub": str(user.id)})
+        refresh_token = create_refresh_token(data={"sub": str(user.id)})
+
+        print(f"Пользователь {email} (ID: {user.id}) успешно вошел в систему. Выданы токены.")
+
+        return {
+            "ok": True,
+            "message": "Login successful!",
+            "isRegistered": True,
+            "access_token": access_token,
+            "refresh_token": refresh_token, # НОВОЕ: Отправляем Refresh Token
+            "token_type": "bearer",
             "main_balance": float(user.main_balance),
             "bonus_balance": float(user.bonus_balance),
             "lucrum_balance": float(user.lucrum_balance),
@@ -170,178 +292,256 @@ async def api_init(request: Request, db: AsyncSession = Depends(get_async_sessio
             "total_withdrawn": float(user.total_withdrawn),
             "username": user.username,
             "first_name": user.first_name,
-            # Ensure registration_date is sent as a string (e.g., ISO format)
-            "registration_date": user.registration_date.isoformat() if user.registration_date else None
+            "last_name": user.last_name,
+            "registration_date": user.registration_date.isoformat() if user.registration_date else None,
+            "status": user.status.value,
+            "role": user.role.value
         }
-    else:
-        # print(f"Пользователь {first_name} (ID: {telegram_id}) не найден в базе данных.")
-        return {
-            "ok": True,
-            "isRegistered": False,
-            "main_balance": 0.0,
-            "bonus_balance": 0.0,
-            "lucrum_balance": 0.0,
-            "total_invested": 0.0,
-            "total_withdrawn": 0.0,
-            "username": username_tg or first_name or "Пользователь",
-            "first_name": first_name,
-            "registration_date": None # No registration date if not registered
-        }
-
-# === Регистрация пользователя ===
-@app.post("/api/register")
-async def api_register(request: Request, db: AsyncSession = Depends(get_async_session)):
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
-
-    init_data = body.get("telegramInitData")
-    username = body.get("username")
-    password = body.get("password")
-    referral_code = body.get("referralCode")
-
-    # 1. Проверяем наличие init_data
-    if not init_data:
-        raise HTTPException(status_code=403, detail="Missing Telegram initData.")
-
-    # 2. Если init_data есть, проверяем её подпись
-    if not check_webapp_signature(init_data, BOT_TOKEN):
-        raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
-
-
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="Username and password are required")
-
-    user_data_str = dict(parse_qsl(init_data)).get('user')
-    if not user_data_str:
-        raise HTTPException(status_code=400, detail="User data not found in initData")
-
-    try:
-        user_info = json.loads(user_data_str)
-        telegram_id = int(user_info.get('id'))
-        first_name = user_info.get('first_name', '')
-        last_name = user_info.get('last_name', '')
-    except (json.JSONDecodeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
-
-    try:
-        existing_user_by_id = await db.get(User, telegram_id)
-        if existing_user_by_id:
-            raise HTTPException(status_code=409, detail="User already registered with this Telegram ID")
-
-        stmt_check_username = select(User).where(User.username == username)
-        existing_user_by_username = (await db.execute(stmt_check_username)).scalar_one_or_none()
-        if existing_user_by_username:
-            raise HTTPException(status_code=409, detail="Username already taken")
-
-        hashed_password_bcrypt = pwd_context.hash(password)
-
-        new_user = User(
-            id=telegram_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-            password_hash=hashed_password_bcrypt
-        )
-        db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
-
-        if referral_code:
-            stmt_referrer = select(User).where(User.username == referral_code)
-            referrer = (await db.execute(stmt_referrer)).scalar_one_or_none()
-            if referrer:
-                new_referral = Referral(
-                    referrer_id=referrer.id,
-                    referred_id=new_user.id,
-                    referral_level=1
-                )
-                db.add(new_referral)
-                await db.commit()
-                print(f"Добавлена реферальная связь: {referrer.username} (ID: {referrer.id}) пригласил {new_user.username} (ID: {new_user.id})")
-            else:
-                print(f"Реферальный код '{referral_code}' не найден.")
-
-        print(f"Пользователь {username} (ID: {telegram_id}) успешно зарегистрирован в БД.")
-
-        return {
-            "ok": True,
-            "message": "Registration successful!",
-            "user_id": str(telegram_id),
-            "username": username
-        }
-    except IntegrityError as e:
-        await db.rollback()
-        print(f"Ошибка целостности при регистрации пользователя: {e}")
-        if "users_username_key" in str(e):
-            raise HTTPException(status_code=409, detail="Username already taken.")
-        raise HTTPException(status_code=500, detail=f"Database integrity error during registration: {e}")
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        await db.rollback()
-        print(f"Общая ошибка при регистрации пользователя: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error during registration: {e}")
+        print(f"Error during login: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
-# === ЭНДПОИНТ: Авторизация пользователя ===
-@app.post("/api/login")
-async def api_login(request: Request, db: AsyncSession = Depends(get_async_session)):
+
+# ================================================
+
+# Обновление Access Token с использованием Refresh Token
+@app.post("/api/refresh-token")
+async def refresh_access_token(
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+    credentials: HTTPAuthorizationCredentials = Depends(security) # Здесь ожидаем Refresh Token в заголовке
+):
+    """
+    Обновляет Access Token, используя Refresh Token.
+    """
+    print("Получен запрос на обновление токена.")
+    try:
+        refresh_token = credentials.credentials
+        user_id_from_refresh = verify_refresh_token(refresh_token) # Верифицируем Refresh Token
+
+        user = await db.get(User, user_id_from_refresh)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        # Дополнительные проверки (например, если Refresh Token был отозван в БД, что требует отдельной таблицы RefreshTokens)
+        # Для простоты, пока просто проверяем статус пользователя.
+        if user.status == UserAccountStatus.banned:
+            raise HTTPException(status_code=403, detail="Account is banned. Access denied.")
+        if user.status == UserAccountStatus.logged_out:
+            raise HTTPException(status_code=401, detail="Account was logged out from another session. Please re-login.")
+
+        # Генерируем новый Access Token
+        new_access_token = create_access_token(data={"sub": str(user.id)})
+        print(f"Access Token обновлен для пользователя {user.username} (ID: {user.id}).")
+
+        return {
+            "ok": True,
+            "access_token": new_access_token,
+            "token_type": "bearer",
+            "message": "Access token refreshed."
+        }
+    except HTTPException as e:
+        print(f"Ошибка при обновлении токена: {e.detail}")
+        raise e
+    except Exception as e:
+        print(f"Неизвестная ошибка при обновлении токена: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error during token refresh: {e}")
+
+
+# ================================================
+
+
+# Проверка сессии (используется при запуске Mini App)
+@app.post("/api/check-session")
+async def check_user_session(
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+    credentials: HTTPAuthorizationCredentials = Depends(security) # Ожидаем Access Token
+):
+    """
+    Проверяет валидность Access Token сессии и возвращает данные пользователя, если сессия активна.
+    Также принимает initData для дополнительной верификации Telegram ID, связанного с токеном.
+    """
+    print("Получен запрос на проверку сессии.")
     try:
         body = await request.json()
+        init_data = body.get("initData")
     except Exception:
         raise HTTPException(status_code=400, detail="Bad Request: Invalid JSON")
 
-    init_data = body.get("telegramInitData")
-    username = body.get("username")
-    password = body.get("password")
-
-    # 1. Проверяем наличие init_data
     if not init_data:
-        raise HTTPException(status_code=403, detail="Missing Telegram initData.")
+        raise HTTPException(status_code=403, detail="Missing Telegram initData")
 
-    # 2. Если init_data есть, проверяем её подпись
     if not check_webapp_signature(init_data, BOT_TOKEN):
         raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
 
-    if not username or not password:
-        raise HTTPException(status_code=400, detail="Username and password are required")
-
-    user_data_str = dict(parse_qsl(init_data)).get('user')
-    if not user_data_str:
-        raise HTTPException(status_code=400, detail="User data not found in initData")
+    user_data_tg_str = dict(parse_qsl(init_data)).get('user')
+    if not user_data_tg_str:
+        raise HTTPException(status_code=400, detail="Telegram user data not found in initData")
 
     try:
-        user_info = json.loads(user_data_str)
-        telegram_id = int(user_info.get('id'))
+        user_info_tg = json.loads(user_data_tg_str)
+        telegram_id_from_tg = int(user_info_tg.get('id'))
     except (json.JSONDecodeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid user data JSON or Telegram ID in initData")
+        raise HTTPException(status_code=400, detail="Invalid Telegram user data JSON or ID.")
 
-    stmt_user = select(User).where(User.username == username)
-    user = (await db.execute(stmt_user)).scalar_one_or_none()
+    try:
+        user_id_from_access = verify_access_token(credentials.credentials) # Верифицируем Access Token
 
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid username or password.")
+        if user_id_from_access != telegram_id_from_tg:
+            print(f"Предупреждение: ID из токена ({user_id_from_access}) не совпадает с ID из initData ({telegram_id_from_tg}).")
+            raise HTTPException(status_code=403, detail="Access Token does not match Telegram user ID.")
 
-    if not pwd_context.verify(password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid username or password.")
+        user = await db.get(User, user_id_from_access)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
 
-    if user.id != telegram_id:
-        raise HTTPException(status_code=403, detail="Account not linked to this Telegram ID. Please re-register or contact support.")
+        # Проверки статуса аккаунта
+        if user.status == UserAccountStatus.banned:
+            raise HTTPException(status_code=403, detail="Account is banned. Access denied.")
+        if user.status == UserAccountStatus.logged_out:
+            # Если статус logged_out, даже если access token валиден, мы хотим принудительно разлогинить
+            raise HTTPException(status_code=401, detail="Account was logged out from another session. Please re-login.")
+        if user.status == UserAccountStatus.inactive:
+            raise HTTPException(status_code=401, detail="Account is inactive. Please re-login.")
 
-    print(f"Пользователь {username} (ID: {telegram_id}) успешно вошел в систему.")
 
-    return {
-        "ok": True,
-        "message": "Login successful!",
-        "isRegistered": True,
-        "main_balance": float(user.main_balance),
-        "bonus_balance": float(user.bonus_balance),
-        "lucrum_balance": float(user.lucrum_balance),
-        "total_invested": float(user.total_invested),
-        "total_withdrawn": float(user.total_withdrawn),
-        "username": user.username,
-        "first_name": user.first_name,
-        "registration_date": user.registration_date.isoformat() if user.registration_date else None
-    }
+        print(f"Сессия для пользователя {user.username} (ID: {user.id}) подтверждена. Статус: {user.status.value}, Роль: {user.role.value}")
+        return {
+            "ok": True,
+            "isLoggedIn": True,
+            "message": "Session is valid.",
+            "user_id": str(user.id),
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "main_balance": float(user.main_balance),
+            "bonus_balance": float(user.bonus_balance),
+            "lucrum_balance": float(user.lucrum_balance),
+            "total_invested": float(user.total_invested),
+            "total_withdrawn": float(user.total_withdrawn),
+            "registration_date": user.registration_date.isoformat() if user.registration_date else None,
+            "status": user.status.value,
+            "role": user.role.value
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Ошибка при проверке сессии: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
+# ================================================
+
+
+# ОБНОВЛЕННЫЙ ЭНДПОИНТ: Выход из системы
+@app.post("/api/logout")
+async def api_logout(
+    db: AsyncSession = Depends(get_async_session),
+    credentials: HTTPAuthorizationCredentials = Depends(security) # Ожидаем Access Token
+):
+    """
+    Выходит из системы, помечая пользователя как 'logged_out' в БД.
+    Отозвать refresh token можно, если хранить их в БД и удалять при логауте.
+    Пока просто устанавливаем статус.
+    """
+    try:
+        user_id = verify_access_token(credentials.credentials) # Верифицируем Access Token
+        user = await db.get(User, user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        user.status = UserAccountStatus.logged_out # Устанавливаем статус "вышел"
+        await db.commit()
+        print(f"Пользователь {user.username} (ID: {user.id}) вышел из системы (статус в БД: logged_out).")
+        return {"ok": True, "message": "Successfully logged out."}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Ошибка при выходе из системы: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
+# ================================================
+
+# Для верификации Telegram initData
+@app.post("/api/verify-telegram-init")
+async def verify_telegram_init(request: Request):
+    """
+    Верифицирует Telegram initData и возвращает данные пользователя Telegram.
+    НЕ делает запросов к вашей БД.
+    """
+    try:
+        data = await request.json()
+        init_data = data.get("initData")
+
+        if not init_data:
+            raise HTTPException(status_code=400, detail="Missing initData")
+
+        if not check_webapp_signature(init_data, BOT_TOKEN):
+            raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
+
+        user_data_tg_str = dict(parse_qsl(init_data)).get('user')
+        if not user_data_tg_str:
+            raise HTTPException(status_code=400, detail="Telegram user data not found in initData")
+
+        user_info_tg = json.loads(user_data_tg_str)
+        # Возвращаем только публичные данные Telegram пользователя
+        return {
+            "ok": True,
+            "telegram_id": user_info_tg.get('id'),
+            "message": "Telegram initData verified."
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error verifying Telegram initData: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
+# ================================================
+
+# НОВЫЙ ЭНДПОИНТ: Проверка зарегистрирован ли пользователь в нашей БД по Telegram ID
+@app.post("/api/is-user-registered")
+async def is_user_registered(request: Request, db: AsyncSession = Depends(get_async_session)):
+    """
+    Проверяет, зарегистрирован ли пользователь в нашей системе по Telegram ID.
+    Предполагает, что initData уже проверена.
+    """
+    try:
+        data = await request.json()
+        telegram_id = data.get("telegram_id") # Получаем ID, который уже был верифицирован
+
+        if not telegram_id:
+            raise HTTPException(status_code=400, detail="Missing Telegram ID.")
+
+        user = await db.get(User, telegram_id)
+        if user:
+            print(f"Пользователь с ID {telegram_id} найден в БД. Статус: {user.status.value}, Роль: {user.role.value}")
+            return {
+                "ok": True,
+                "isRegistered": True,
+                "username": user.username,
+                "status": user.status.value, # Возвращаем статус и роль
+                "role": user.role.value
+            }
+        else:
+            return {
+                "ok": True,
+                "isRegistered": False,
+                "message": "User not registered in our system."
+            }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error checking user registration: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
+
+
 
 # === Эндпоинт для повторной отправки письма (если нужно) ===
 @app.post("/api/resend_email")
