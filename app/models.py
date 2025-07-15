@@ -1,5 +1,5 @@
 # app/models.py
-
+import enum
 from sqlalchemy import Column, BigInteger, String, Numeric, DateTime, Boolean, Text, Integer, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
