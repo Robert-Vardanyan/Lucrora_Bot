@@ -160,7 +160,10 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
         phone_number = data.get("phone_number") 
         email = data.get("email")               
 
+        print(f"Получен запрос на регистрацию: init_data={init_data}, username={username}, phone_number={phone_number}, email={email}")
+
         if not init_data or not username or not password:
+            print("init_data", init_data, "username:", username, "password:", password)
             raise HTTPException(status_code=400, detail="Missing required data.")
 
         if not check_webapp_signature(init_data, BOT_TOKEN):
