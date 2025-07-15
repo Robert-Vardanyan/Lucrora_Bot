@@ -156,31 +156,59 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
         init_data = data.get("initData")
         username = data.get("username")
         password = data.get("password")
-        remember_me = data.get("rememberMe", False) # НОВОЕ: флаг "Remember Me"
+        # remember_me = data.get("rememberMe", False) # Этот флаг не используется в вашем текущем бэкенде, можно удалить
         phone_number = data.get("phone_number") 
-        email = data.get("email")               
-
+        email = data.get("email") 
+                                
         print(f"Получен запрос на регистрацию: init_data={init_data}, username={username}, phone_number={phone_number}, email={email}")
 
-        if not init_data or not username or not password:
-            print("init_data", init_data, "username:", username, "password:", password)
-            raise HTTPException(status_code=400, detail="Missing required data.")
+        # Улучшенная проверка на отсутствующие данные. 
+        # Если init_data не пришла, это критично.
+        # Для остальных полей, если они ожидаются, их тоже нужно проверять.
+        if not init_data:
+            raise HTTPException(status_code=400, detail="Missing Telegram InitData.")
+        if not username:
+            raise HTTPException(status_code=400, detail="Username is required.")
+        if not password:
+            raise HTTPException(status_code=400, detail="Password is required.")
+        if not email: # Теперь email обязателен для регистрации
+             raise HTTPException(status_code=400, detail="Email is required.")
+        if not phone_number: # Теперь phone_number обязателен для регистрации
+             raise HTTPException(status_code=400, detail="Phone number is required.")
 
         if not check_webapp_signature(init_data, BOT_TOKEN):
             raise HTTPException(status_code=403, detail="Invalid Telegram initData signature.")
 
         user_data_tg_str = dict(parse_qsl(init_data)).get('user')
         if not user_data_tg_str:
-            raise HTTPException(status_code=400, detail="Telegram user data not found in initData")
+            raise HTTPException(status_code=400, detail="Telegram user data not found in initData.")
 
         user_info_tg = json.loads(user_data_tg_str)
         telegram_id = int(user_info_tg.get('id'))
         first_name = user_info_tg.get('first_name')
         last_name = user_info_tg.get('last_name')
 
-        existing_user = await db.execute(select(User).filter_by(id=telegram_id))
-        if existing_user.scalar_one_or_none():
-            raise HTTPException(status_code=409, detail="User already registered.")
+        # === НОВАЯ ЛОГИКА: Явные проверки на уникальность перед созданием пользователя ===
+        
+        # 1. Проверка по Telegram ID (пользователь уже зарегистрирован через бота)
+        existing_user_by_id = await db.execute(select(User).filter_by(id=telegram_id))
+        if existing_user_by_id.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="User with this Telegram ID is already registered.")
+
+        # 2. Проверка уникальности username
+        existing_user_by_username = await db.execute(select(User).filter_by(username=username))
+        if existing_user_by_username.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Username already taken.")
+
+        # 3. Проверка уникальности email
+        existing_user_by_email = await db.execute(select(User).filter_by(email=email))
+        if existing_user_by_email.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Email already registered.")
+
+        # 4. Проверка уникальности phone_number
+        existing_user_by_phone = await db.execute(select(User).filter_by(phone_number=phone_number))
+        if existing_user_by_phone.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Phone number already registered.")
 
         # Хэширование пароля
         hashed_password = pwd_context.hash(password)
@@ -212,7 +240,7 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
             "user_id": str(telegram_id),
             "username": username,
             "access_token": access_token,
-            "refresh_token": refresh_token, # НОВОЕ: Отправляем Refresh Token
+            "refresh_token": refresh_token,
             "token_type": "bearer",
             "isRegistered": True,
             "main_balance": float(new_user.main_balance),
@@ -228,11 +256,14 @@ async def api_register(request: Request, db: AsyncSession = Depends(get_async_se
             "phone_number": new_user.phone_number
         }
     except HTTPException as e:
+        # Перехватываем HTTPException, чтобы FastAPI мог ее обработать как HTTP-ответ.
+        # Например, 400 (Missing data), 403 (Invalid signature), 409 (Conflict).
         raise e
     except Exception as e:
-        print(f"Error during registration: {e}")
+        # Логируем любые другие неожиданные ошибки, прежде чем вернуть 500
+        print(f"НЕПРЕДВИДЕННАЯ ОШИБКА во время регистрации: {e}")
+        # Возвращаем 500, только если это действительно внутренняя, непредвиденная ошибка.
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
-
 # ================================================
 
 @app.post("/api/login")
