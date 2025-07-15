@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl
 from operator import itemgetter
 import json
 from datetime import datetime, timedelta, timezone
-
+from jose import jwt, JWTError 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import Command
