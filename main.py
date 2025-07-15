@@ -14,7 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.methods import SetWebhook, DeleteWebhook # Импортируем методы для вебхуков
 
-from fastapi import FastAPI, Request, HTTPException, Depends
+from fastapi import FastAPI, Request, HTTPException, Depends, Query # Импортируем Query для параметров GET запроса
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -28,10 +28,10 @@ from app.database import engine, create_db_tables, drop_db_tables, get_async_ses
 from app.models import User, Investment, Transaction, Referral # Ensure User is imported
 
 # --- Импортируем новый роутер для инвестиций ---
-from app.routers import investments # 
+from app.routers import investments #
 
 # --- Импортируем функцию для проверки подписи initData ---
-from app.utils import check_webapp_signature 
+from app.utils import check_webapp_signature
 
 # --- Импортируем реферальную систему ---
 from app import referrals
@@ -46,7 +46,7 @@ from app.routers import games
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBAPP_URL = os.getenv("WEBAPP_URL") # URL вашего Mini App
-BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL") 
+BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")
 DROP_DB_ON_STARTUP = os.getenv("DROP_DB_ON_STARTUP", "False").lower() == "true"
 
 
@@ -79,12 +79,33 @@ webapp_button = InlineKeyboardMarkup(inline_keyboard=[
 async def start_handler(message: Message):
 
     print(f"Получено сообщение от пользователя: {message.from_user.id} - start")
-    
+
     await message.answer(
         "👋 Привет! Нажми кнопку ниже, чтобы открыть Mini App:",
         reply_markup=webapp_button
     )
     await message.delete() # Удаление сообщения может быть нежелательно для пользователя
+
+# === Проверка существования пользователя по Telegram ID ===
+@app.get("/check_user") # Используем GET запрос, так как мы только получаем информацию
+async def check_user_exists(user_id: int = Query(..., description="Telegram User ID"), db: AsyncSession = Depends(get_async_session)):
+    """
+    Проверяет, существует ли пользователь в базе данных по его Telegram ID.
+    Возвращает {"exists": true} если пользователь найден, иначе {"exists": false}.
+    """
+    print(f"Получен запрос на проверку пользователя с Telegram ID: {user_id}")
+    try:
+        user = await db.get(User, user_id)
+        if user:
+            print(f"Пользователь с ID {user_id} найден. isRegistered: True")
+            return {"exists": True}
+        else:
+            print(f"Пользователь с ID {user_id} не найден. isRegistered: False")
+            return {"exists": False}
+    except Exception as e:
+        print(f"Ошибка при проверке пользователя в БД: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error during user check.")
+
 
 # === Эндпоинт инициализации Mini App ===
 @app.post("/api/init")
@@ -377,7 +398,7 @@ async def on_startup():
     if not BOT_TOKEN or not BASE_WEBHOOK_URL:
         print("❌ Не указан BOT_TOKEN или BASE_WEBHOOK_URL. Вебхуки не будут настроены.")
         # Возможно, здесь стоит выйти из приложения или выбросить исключение
-        return 
+        return
 
     webhook_url = f"{BASE_WEBHOOK_URL}/webhook"
     print(f"Устанавливаю вебхук на: {webhook_url}")
@@ -403,11 +424,11 @@ async def on_shutdown():
         await bot(DeleteWebhook())
     except Exception as e:
         print(f"❌ Ошибка при удалении вебхука: {e}")
-    
+
     await bot.session.close() # Закрываем сессию бота при завершении работы
 
 # === Регистрация роутеров  ===
-app.include_router(investments.router) 
-app.include_router(referrals.router)  
+app.include_router(investments.router)
+app.include_router(referrals.router)
 app.include_router(transactions_router)
 app.include_router(games.router)
