@@ -85,14 +85,15 @@ def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM) # Используем JWT_SECRET_KEY
-    return encoded_jwt
+    encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM)
+    # ВОТ ИЗМЕНЕНИЕ: возвращаем токен И объект expire
+    return encoded_jwt, expire
 
 def create_refresh_token(data: dict):
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, REFRESH_TOKEN_SECRET_KEY, algorithm=ALGORITHM) # Используем REFRESH_TOKEN_SECRET_KEY
+    encoded_jwt = jwt.encode(to_encode, REFRESH_TOKEN_SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
 def verify_access_token(token: str):
@@ -340,12 +341,12 @@ async def api_login(request: Request, db: AsyncSession = Depends(get_async_sessi
 
 # ================================================
 
-# Обновление Access Token с использованием Refresh Token
-@app.post("/api/refresh-token")
+# НОВЫЙ ЭНДПОИНТ: Обновление Access Token с использованием Refresh Token
+@app.post("/api/refresh-token") 
 async def refresh_access_token(
     request: Request,
     db: AsyncSession = Depends(get_async_session),
-    credentials: HTTPAuthorizationCredentials = Depends(security) # Здесь ожидаем Refresh Token в заголовке
+    credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
     Обновляет Access Token, используя Refresh Token.
@@ -353,28 +354,36 @@ async def refresh_access_token(
     print("Получен запрос на обновление токена.")
     try:
         refresh_token = credentials.credentials
-        user_id_from_refresh = verify_refresh_token(refresh_token) # Верифицируем Refresh Token
+        user_id_from_refresh = verify_refresh_token(refresh_token)
 
         user = await db.get(User, user_id_from_refresh)
         if not user:
             raise HTTPException(status_code=404, detail="User not found.")
 
-        # Дополнительные проверки (например, если Refresh Token был отозван в БД, что требует отдельной таблицы RefreshTokens)
-        # Для простоты, пока просто проверяем статус пользователя.
         if user.status == UserAccountStatus.banned:
             raise HTTPException(status_code=403, detail="Account is banned. Access denied.")
         if user.status == UserAccountStatus.logged_out:
             raise HTTPException(status_code=401, detail="Account was logged out from another session. Please re-login.")
 
-        # Генерируем новый Access Token
-        new_access_token = create_access_token(data={"sub": str(user.id)})
-        print(f"Access Token обновлен для пользователя {user.username} (ID: {user.id}).")
+        # Генерируем новый Access Token и получаем его время истечения
+        new_access_token, access_token_expire_time = create_access_token(data={"sub": str(user.id)})
+
+        # Генерируем новый Refresh Token.
+        # Если ты хочешь "вращающиеся" refresh токены (когда старый токен становится недействительным
+        # после использования, а выдается новый), то это то место.
+        # Если нет, можешь вернуть тот же самый refresh_token, который пришел, но это менее безопасно.
+        new_refresh_token = create_refresh_token(data={"sub": str(user.id)})
+
+
+        print(f"Access Token и Refresh Token обновлены для пользователя {user.username} (ID: {user.id}).")
 
         return {
             "ok": True,
             "access_token": new_access_token,
+            "refresh_token": new_refresh_token, # <- Отправляем новый Refresh Token
+            "expires_at": access_token_expire_time.isoformat(), # <- Отправляем время истечения Access Token в ISO формате
             "token_type": "bearer",
-            "message": "Access token refreshed."
+            "message": "Tokens refreshed successfully."
         }
     except HTTPException as e:
         print(f"Ошибка при обновлении токена: {e.detail}")
